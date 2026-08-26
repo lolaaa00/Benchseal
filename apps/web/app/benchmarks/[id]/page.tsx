@@ -17,6 +17,7 @@ import {
 } from "@/lib/genlayer/contract";
 import { ContractGuard } from "@/components/ContractGuard";
 import { useWallet } from "@/components/WalletProvider";
+import { TxStatus } from "@/components/TxStatus";
 
 function StatusTag({ status }: { status: number }) {
   const label = runStatusLabel(status as 0);
@@ -51,6 +52,7 @@ function BenchmarkDetail({ id }: { id: number }) {
   const [publishForm, setPublishForm] = useState({ url: "", digest: "", note: "" });
   const [publishing, setPublishing] = useState(false);
   const [publishTxHash, setPublishTxHash] = useState<string | null>(null);
+  const [publishTxStatus, setPublishTxStatus] = useState<string | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
 
   async function handlePublishVersion(e: React.FormEvent) {
@@ -58,7 +60,7 @@ function BenchmarkDetail({ id }: { id: number }) {
     setPublishError(null);
     setPublishing(true);
     try {
-      const exec = await publishVersion(id, publishForm.url, publishForm.digest || "sha256:none", publishForm.note || "new version", (hash) => setPublishTxHash(hash));
+      const exec = await publishVersion(id, publishForm.url, publishForm.digest || "sha256:none", publishForm.note || "new version", (hash) => setPublishTxHash(hash), (status) => setPublishTxStatus(status));
       if (exec.status === "ROLLBACK") throw new Error(exec.errorMessage ?? "Transaction rolled back");
       window.location.reload();
     } catch (err: unknown) {
@@ -92,7 +94,7 @@ function BenchmarkDetail({ id }: { id: number }) {
   })();
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 20, minHeight: "calc(100vh - 160px)" }}>
+    <div className="benchmark-layout">
       {/* Left: Spec panel */}
       <div style={{ ...panelStyle, padding: 20, display: "flex", flexDirection: "column", gap: 20 }}>
         <div style={{ fontFamily: "Sora, sans-serif", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--ink-faint)" }}>
@@ -191,17 +193,9 @@ function BenchmarkDetail({ id }: { id: number }) {
                 onChange={(e) => setPublishForm({ ...publishForm, note: e.target.value })}
                 style={{ fontSize: 12 }}
               />
-              {publishError && <div className="error-banner" style={{ fontSize: 11 }}>{publishError}</div>}
-              {publishing && publishTxHash && (
-                <div style={{ padding: "10px 12px", background: "rgba(78,71,160,.25)", border: "1px solid rgba(201,195,232,.2)", borderRadius: 10 }}>
-                  <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--orange)", marginBottom: 4 }}>
-                    Tx submitted - awaiting consensus...
-                  </div>
-                  <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 9, color: "var(--ink-faint)", wordBreak: "break-all" }}>
-                    {publishTxHash}
-                  </div>
-                </div>
-              )}
+              <div aria-live="polite">
+                <TxStatus txHash={publishTxHash} status={publishTxStatus} error={publishError} />
+              </div>
               <button type="submit" className="btn-p" disabled={publishing} style={{ fontSize: 12, padding: "8px 14px" }}>
                 {publishing ? (publishTxHash ? "Awaiting consensus..." : "Publishing...") : "Publish Version"}
               </button>

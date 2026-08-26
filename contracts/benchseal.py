@@ -81,6 +81,15 @@ class BenchSeal(gl.Contract):
             return addr.as_hex
         return str(addr)
 
+    def _do_score(self, scoring_prompt: str) -> str:
+        def leader() -> str:
+            result = gl.exec_prompt(scoring_prompt)
+            return result.replace("```json", "").replace("```", "").strip()
+        return gl.eq_principle.prompt_comparative(
+            leader,
+            "The dimension_bands integer values (0-4) for each named dimension must match exactly"
+        )
+
     def _parse_dimensions(self, dimensions_json) -> list:
         # Accept both a JSON string and a pre-parsed list
         if isinstance(dimensions_json, list):
@@ -88,10 +97,10 @@ class BenchSeal(gl.Contract):
         try:
             dims = json.loads(dimensions_json)
             if not isinstance(dims, list):
-                raise ValueError("dimensions_json must be a JSON array")
+                raise gl.vm.UserError("EXPECTED: dimensions_json must be a JSON array")
             return [str(d) for d in dims]
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid dimensions_json: {e}") from e
+            raise gl.vm.UserError(f"EXPECTED: Invalid dimensions_json: {e}") from e
 
     # -----------------------------------------------------------------------
     # Public write methods
@@ -107,16 +116,16 @@ class BenchSeal(gl.Contract):
         sampling_policy_json: str,
     ) -> int:
         if not name or len(name) > 256:
-            raise ValueError("name must be 1-256 characters")
+            raise gl.vm.UserError("EXPECTED: name must be 1-256 characters")
         if not rubric_url or len(rubric_url) > 2048:
-            raise ValueError("rubric_url must be 1-2048 characters")
+            raise gl.vm.UserError("EXPECTED: rubric_url must be 1-2048 characters")
         if not rubric_digest:
-            raise ValueError("rubric_digest is required")
+            raise gl.vm.UserError("EXPECTED: rubric_digest is required")
         dims = self._parse_dimensions(dimensions_json)
         if len(dims) == 0:
-            raise ValueError("dimensions_json must contain at least one dimension")
+            raise gl.vm.UserError("EXPECTED: dimensions_json must contain at least one dimension")
         if len(dims) > 32:
-            raise ValueError("dimensions_json may not contain more than 32 dimensions")
+            raise gl.vm.UserError("EXPECTED: dimensions_json may not contain more than 32 dimensions")
         # Normalize JSON fields
         if isinstance(sampling_policy_json, dict):
             sampling_policy_str = json.dumps(sampling_policy_json)
@@ -125,7 +134,7 @@ class BenchSeal(gl.Contract):
                 json.loads(sampling_policy_json)
                 sampling_policy_str = sampling_policy_json
             except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid sampling_policy_json: {e}") from e
+                raise gl.vm.UserError(f"EXPECTED: Invalid sampling_policy_json: {e}") from e
 
         dims_str = json.dumps(dims)
 
@@ -155,14 +164,14 @@ class BenchSeal(gl.Contract):
     ) -> int:
         bs = self._load_benchmarks()
         if benchmark_id < 0 or benchmark_id >= len(bs):
-            raise ValueError(f"Benchmark {benchmark_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Benchmark {benchmark_id} not found")
         b = bs[benchmark_id]
         if b["owner"] != self._caller():
-            raise ValueError("Only the benchmark owner can publish versions")
+            raise gl.vm.UserError("EXPECTED: Only the benchmark owner can publish versions")
         if not task_manifest_url or len(task_manifest_url) > 2048:
-            raise ValueError("task_manifest_url must be 1-2048 characters")
+            raise gl.vm.UserError("EXPECTED: task_manifest_url must be 1-2048 characters")
         if not task_manifest_digest:
-            raise ValueError("task_manifest_digest is required")
+            raise gl.vm.UserError("EXPECTED: task_manifest_digest is required")
         b["current_version"] += 1
         self._save_benchmarks(bs)
         return b["current_version"]
@@ -181,20 +190,20 @@ class BenchSeal(gl.Contract):
     ) -> int:
         bs = self._load_benchmarks()
         if benchmark_id < 0 or benchmark_id >= len(bs):
-            raise ValueError(f"Benchmark {benchmark_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Benchmark {benchmark_id} not found")
         b = bs[benchmark_id]
         if version <= 0 or version > b["current_version"]:
-            raise ValueError(f"Invalid version {version}; current is {b['current_version']}")
+            raise gl.vm.UserError(f"EXPECTED: Invalid version {version}; current is {b['current_version']}")
         if not model_name or len(model_name) > 256:
-            raise ValueError("model_name must be 1-256 characters")
+            raise gl.vm.UserError("EXPECTED: model_name must be 1-256 characters")
         if not run_manifest_url or len(run_manifest_url) > 2048:
-            raise ValueError("run_manifest_url required")
+            raise gl.vm.UserError("EXPECTED: run_manifest_url required")
         if not run_manifest_digest:
-            raise ValueError("run_manifest_digest required")
+            raise gl.vm.UserError("EXPECTED: run_manifest_digest required")
         if not sample_bundle_url or len(sample_bundle_url) > 2048:
-            raise ValueError("sample_bundle_url required")
+            raise gl.vm.UserError("EXPECTED: sample_bundle_url required")
         if not sample_bundle_digest:
-            raise ValueError("sample_bundle_digest required")
+            raise gl.vm.UserError("EXPECTED: sample_bundle_digest required")
         if isinstance(deterministic_metrics_json, dict):
             metrics_str = json.dumps(deterministic_metrics_json)
         else:
@@ -202,7 +211,7 @@ class BenchSeal(gl.Contract):
                 json.loads(deterministic_metrics_json)
                 metrics_str = deterministic_metrics_json
             except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid deterministic_metrics_json: {e}") from e
+                raise gl.vm.UserError(f"EXPECTED: Invalid deterministic_metrics_json: {e}") from e
 
         rs = self._load_runs()
         rid = len(rs)
@@ -234,11 +243,11 @@ class BenchSeal(gl.Contract):
         Pass sample_bundle_content and rubric_content to avoid URL fetching."""
         rs = self._load_runs()
         if run_id < 0 or run_id >= len(rs):
-            raise ValueError(f"Run {run_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Run {run_id} not found")
         run = rs[run_id]
         if run["status"] != RUN_COMMITTED:
-            raise ValueError(
-                f"Run {run_id} is not in RUN_COMMITTED state (current: {run['status']})"
+            raise gl.vm.UserError(
+                f"EXPECTED: Run {run_id} is not in RUN_COMMITTED state (current: {run['status']})"
             )
 
         bs = self._load_benchmarks()
@@ -246,7 +255,7 @@ class BenchSeal(gl.Contract):
         b = bs[bid]
         dimensions = self._parse_dimensions(b["dimensions_json"])
         if not dimensions:
-            raise ValueError("Benchmark has no dimensions configured")
+            raise gl.vm.UserError("EXPECTED: Benchmark has no dimensions configured")
 
         run["status"] = SCORING
         self._save_runs(rs)
@@ -310,8 +319,13 @@ Return ONLY a valid JSON object in this exact format:
 If you cannot score due to invalid data, return: {{"ok": false, "reason": "<explanation>"}}
 """
 
-        validator_result = gl.exec_prompt(scoring_prompt)
-        validator_result = validator_result.replace("```json", "").replace("```", "").strip()
+        try:
+            validator_result = self._do_score(scoring_prompt)
+        except Exception as e:
+            run["status"] = ABSTAINED
+            run["rationale"] = f"TRANSIENT: Scoring prompt failed: {str(e)[:200]}"
+            self._save_runs(rs)
+            return
 
         # Post-consensus: parse and validate
         rs2 = self._load_runs()
@@ -384,10 +398,10 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
     ) -> int:
         bs = self._load_benchmarks()
         if benchmark_id < 0 or benchmark_id >= len(bs):
-            raise ValueError(f"Benchmark {benchmark_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Benchmark {benchmark_id} not found")
         b = bs[benchmark_id]
         if b["owner"] != self._caller():
-            raise ValueError("Only the benchmark owner can seal leaderboards")
+            raise gl.vm.UserError("EXPECTED: Only the benchmark owner can seal leaderboards")
         if isinstance(ordered_run_ids_json, list):
             ordered_run_ids = ordered_run_ids_json
             ordered_run_ids_json = json.dumps(ordered_run_ids)
@@ -395,22 +409,22 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
             try:
                 ordered_run_ids = json.loads(ordered_run_ids_json)
             except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid ordered_run_ids_json: {e}") from e
+                raise gl.vm.UserError(f"EXPECTED: Invalid ordered_run_ids_json: {e}") from e
             if not isinstance(ordered_run_ids, list):
-                raise ValueError("ordered_run_ids_json must be a JSON array")
+                raise gl.vm.UserError("EXPECTED: ordered_run_ids_json must be a JSON array")
 
         rs = self._load_runs()
         for rid_raw in ordered_run_ids:
             rid = int(rid_raw)
             if rid < 0 or rid >= len(rs):
-                raise ValueError(f"Run {rid} not found")
+                raise gl.vm.UserError(f"EXPECTED: Run {rid} not found")
             run = rs[rid]
             if run["benchmark_id"] != benchmark_id:
-                raise ValueError(f"Run {rid} does not belong to benchmark {benchmark_id}")
+                raise gl.vm.UserError(f"EXPECTED: Run {rid} does not belong to benchmark {benchmark_id}")
             if run["version"] != version:
-                raise ValueError(f"Run {rid} is not for version {version}")
+                raise gl.vm.UserError(f"EXPECTED: Run {rid} is not for version {version}")
             if run["status"] != SEALED:
-                raise ValueError(f"Run {rid} is not SEALED (status: {run['status']})")
+                raise gl.vm.UserError(f"EXPECTED: Run {rid} is not SEALED (status: {run['status']})")
 
         content = f"{benchmark_id}:{version}:{ordered_run_ids_json}"
         digest = hashlib.sha256(content.encode()).hexdigest()
@@ -432,15 +446,15 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
     def invalidate_run(self, run_id: int, public_reason_url: str) -> None:
         rs = self._load_runs()
         if run_id < 0 or run_id >= len(rs):
-            raise ValueError(f"Run {run_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Run {run_id} not found")
         run = rs[run_id]
         bs = self._load_benchmarks()
         b = bs[run["benchmark_id"]]
         caller = self._caller()
         if caller != b["owner"] and caller != run["submitter"]:
-            raise ValueError("Only the benchmark owner or run submitter can invalidate a run")
+            raise gl.vm.UserError("EXPECTED: Only the benchmark owner or run submitter can invalidate a run")
         if run["status"] == INVALIDATED:
-            raise ValueError(f"Run {run_id} is already invalidated")
+            raise gl.vm.UserError(f"EXPECTED: Run {run_id} is already invalidated")
         run["status"] = INVALIDATED
         run["rationale"] = f"INVALIDATED: {public_reason_url}"
         self._save_runs(rs)
@@ -453,30 +467,30 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
     def get_run(self, run_id: int) -> dict:
         rs = self._load_runs()
         if run_id < 0 or run_id >= len(rs):
-            raise ValueError(f"Run {run_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Run {run_id} not found")
         return rs[run_id]
 
     @gl.public.view
     def get_benchmark(self, benchmark_id: int) -> dict:
         bs = self._load_benchmarks()
         if benchmark_id < 0 or benchmark_id >= len(bs):
-            raise ValueError(f"Benchmark {benchmark_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Benchmark {benchmark_id} not found")
         return bs[benchmark_id]
 
     @gl.public.view
     def get_snapshot(self, snapshot_id: int) -> dict:
         ss = self._load_snapshots()
         if snapshot_id < 0 or snapshot_id >= len(ss):
-            raise ValueError(f"Snapshot {snapshot_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Snapshot {snapshot_id} not found")
         return ss[snapshot_id]
 
     @gl.public.view
     def preview_exemplars(self, run_id: int, dimension: str, k: int) -> list:
         rs = self._load_runs()
         if run_id < 0 or run_id >= len(rs):
-            raise ValueError(f"Run {run_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Run {run_id} not found")
         if k < 1 or k > 10:
-            raise ValueError("k must be between 1 and 10")
+            raise gl.vm.UserError("EXPECTED: k must be between 1 and 10")
         run = rs[run_id]
         bid = run["benchmark_id"]
         exemplars_list = self._load_exemplars()
@@ -491,9 +505,9 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
     @gl.public.view
     def list_benchmarks(self, offset: int, limit: int) -> list:
         if offset < 0:
-            raise ValueError("offset must be >= 0")
+            raise gl.vm.UserError("EXPECTED: offset must be >= 0")
         if limit < 1 or limit > 100:
-            raise ValueError("limit must be between 1 and 100")
+            raise gl.vm.UserError("EXPECTED: limit must be between 1 and 100")
         bs = self._load_benchmarks()
         return bs[offset: offset + limit]
 
@@ -501,11 +515,11 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
     def list_runs(self, benchmark_id: int, offset: int, limit: int) -> list:
         bs = self._load_benchmarks()
         if benchmark_id < 0 or benchmark_id >= len(bs):
-            raise ValueError(f"Benchmark {benchmark_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Benchmark {benchmark_id} not found")
         if offset < 0:
-            raise ValueError("offset must be >= 0")
+            raise gl.vm.UserError("EXPECTED: offset must be >= 0")
         if limit < 1 or limit > 100:
-            raise ValueError("limit must be between 1 and 100")
+            raise gl.vm.UserError("EXPECTED: limit must be between 1 and 100")
         rs = self._load_runs()
         matching = [r for r in rs if r["benchmark_id"] == benchmark_id]
         page = matching[offset: offset + limit]
@@ -523,11 +537,11 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
     def list_snapshots(self, benchmark_id: int, offset: int, limit: int) -> list:
         bs = self._load_benchmarks()
         if benchmark_id < 0 or benchmark_id >= len(bs):
-            raise ValueError(f"Benchmark {benchmark_id} not found")
+            raise gl.vm.UserError(f"EXPECTED: Benchmark {benchmark_id} not found")
         if offset < 0:
-            raise ValueError("offset must be >= 0")
+            raise gl.vm.UserError("EXPECTED: offset must be >= 0")
         if limit < 1 or limit > 100:
-            raise ValueError("limit must be between 1 and 100")
+            raise gl.vm.UserError("EXPECTED: limit must be between 1 and 100")
         ss = self._load_snapshots()
         matching = [s for s in ss if s["benchmark_id"] == benchmark_id]
         return matching[offset: offset + limit]

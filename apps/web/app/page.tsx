@@ -193,6 +193,56 @@ export default function RegistryPage() {
         </div>
       </div>
 
+      {/* Hero / product explanation */}
+      <div
+        style={{
+          background: "rgba(38,34,98,.3)",
+          border: "1.5px solid rgba(201,195,232,.12)",
+          borderRadius: 20,
+          padding: "28px 32px",
+          marginBottom: 32,
+        }}
+      >
+        <p
+          style={{
+            fontFamily: "Inter, sans-serif",
+            fontSize: 15,
+            color: "var(--ink)",
+            margin: "0 0 20px",
+            lineHeight: 1.6,
+            fontWeight: 500,
+          }}
+        >
+          Model evaluation happens off-chain. Certification happens on GenLayer.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, marginBottom: 20 }}>
+          {[
+            { n: "1", title: "Submit Run", desc: "Commit your model's manifest URL and sample output bundle on-chain" },
+            { n: "2", title: "Validators Score", desc: "GenLayer validators independently score each quality dimension (0–4)" },
+            { n: "3", title: "Sealed On-Chain", desc: "Consensus seals the result — immutable, verifiable, trustless" },
+          ].map(({ n, title, desc }) => (
+            <div key={n} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+              <span style={{
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 13,
+                fontWeight: 700,
+                color: "var(--orange)",
+                minWidth: 20,
+              }}>
+                {n}.
+              </span>
+              <div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 13, fontWeight: 700, color: "var(--ink)", marginBottom: 4 }}>{title}</div>
+                <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-dim)", lineHeight: 1.5 }}>{desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <p style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-dim)", margin: 0, lineHeight: 1.6 }}>
+          Without consensus, a single party decides if your model passes. BenchSeal removes that trust assumption — no lab can certify its own results.
+        </p>
+      </div>
+
       <ContractGuard>
         <RegistryContent />
       </ContractGuard>

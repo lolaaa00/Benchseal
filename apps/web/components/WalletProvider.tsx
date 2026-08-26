@@ -2,6 +2,10 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { GENLAYER_CHAIN_ID, GENLAYER_CHAIN_ID_HEX, STUDIONET_CHAIN } from "@/lib/genlayer/config";
+import { loadStoredKey, saveStoredKey, clearStoredKey } from "@/lib/genlayer/wallet-storage";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type GenLayerAccount = any;
 
 interface WalletState {
   account: string | null;
@@ -9,7 +13,11 @@ interface WalletState {
   isConnecting: boolean;
   isCorrectChain: boolean;
   error: string | null;
+  walletMode: "none" | "injected" | "generated";
   connect: () => Promise<void>;
+  generateWallet: () => void;
+  exportKey: () => string | null;
+  importKey: (pk: string) => void;
   switchChain: () => Promise<void>;
   disconnect: () => void;
 }
@@ -20,7 +28,11 @@ const WalletContext = createContext<WalletState>({
   isConnecting: false,
   isCorrectChain: false,
   error: null,
+  walletMode: "none",
   connect: async () => {},
+  generateWallet: () => {},
+  exportKey: () => null,
+  importKey: () => {},
   switchChain: async () => {},
   disconnect: () => {},
 });
@@ -40,8 +52,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [chainId, setChainId] = useState<number | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [walletMode, setWalletMode] = useState<"none" | "injected" | "generated">("none");
+  const [generatedPk, setGeneratedPk] = useState<string | null>(null);
 
-  const isCorrectChain = chainId === GENLAYER_CHAIN_ID;
+  const isCorrectChain = walletMode === "generated" ? true : chainId === GENLAYER_CHAIN_ID;
 
   const readChain = useCallback(async () => {
     const eth = getEthereum();
@@ -54,16 +68,42 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Subscribe to wallet events — no auto-connect on load
+  // On mount: restore generated wallet if stored
+  useEffect(() => {
+    const pk = loadStoredKey();
+    if (pk) {
+      try {
+        // Dynamically import to avoid SSR issues
+        import("genlayer-js").then(({ createAccount }) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const acct: GenLayerAccount = createAccount(pk as `0x${string}`);
+          setGeneratedPk(pk);
+          setAccount(acct.address);
+          setWalletMode("generated");
+        }).catch(() => {
+          // If import fails, clear stored key
+          clearStoredKey();
+        });
+      } catch {
+        clearStoredKey();
+      }
+    }
+  }, []);
+
+  // Subscribe to injected wallet events
   useEffect(() => {
     const eth = getEthereum();
     if (!eth) return;
 
     const onAccountsChanged = (accounts: string[]) => {
       if (accounts.length === 0) {
-        setAccount(null);
+        if (walletMode === "injected") {
+          setAccount(null);
+          setWalletMode("none");
+        }
       } else {
         setAccount(accounts[0]);
+        setWalletMode("injected");
       }
     };
 
@@ -72,8 +112,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     };
 
     const onDisconnect = () => {
-      setAccount(null);
-      setChainId(null);
+      if (walletMode === "injected") {
+        setAccount(null);
+        setChainId(null);
+        setWalletMode("none");
+      }
     };
 
     eth.on("accountsChanged", onAccountsChanged);
@@ -85,7 +128,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       eth.removeListener?.("chainChanged", onChainChanged);
       eth.removeListener?.("disconnect", onDisconnect);
     };
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletMode]);
 
   const connect = useCallback(async () => {
     const eth = getEthereum();
@@ -98,6 +142,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     try {
       const accounts: string[] = await eth.request({ method: "eth_requestAccounts" });
       setAccount(accounts[0] ?? null);
+      setWalletMode("injected");
       await readChain();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -106,6 +151,39 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setIsConnecting(false);
     }
   }, [readChain]);
+
+  const generateWallet = useCallback(() => {
+    import("genlayer-js").then(({ generatePrivateKey, createAccount }) => {
+      const pk = generatePrivateKey();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const acct: GenLayerAccount = createAccount(pk as `0x${string}`);
+      saveStoredKey(pk as string);
+      setGeneratedPk(pk as string);
+      setAccount(acct.address);
+      setWalletMode("generated");
+      setError(null);
+    }).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : String(e));
+    });
+  }, []);
+
+  const exportKey = useCallback((): string | null => {
+    return generatedPk;
+  }, [generatedPk]);
+
+  const importKey = useCallback((pk: string) => {
+    import("genlayer-js").then(({ createAccount }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const acct: GenLayerAccount = createAccount(pk as `0x${string}`);
+      saveStoredKey(pk);
+      setGeneratedPk(pk);
+      setAccount(acct.address);
+      setWalletMode("generated");
+      setError(null);
+    }).catch((e: unknown) => {
+      setError("Invalid private key: " + (e instanceof Error ? e.message : String(e)));
+    });
+  }, []);
 
   const switchChain = useCallback(async () => {
     const eth = getEthereum();
@@ -117,7 +195,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         params: [{ chainId: GENLAYER_CHAIN_ID_HEX }],
       });
     } catch (switchErr: unknown) {
-      // Chain not added — add it
       if ((switchErr as { code?: number }).code === 4902) {
         try {
           await eth.request({
@@ -146,7 +223,12 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setAccount(null);
     setChainId(null);
     setError(null);
-  }, []);
+    setWalletMode("none");
+    if (generatedPk) {
+      clearStoredKey();
+      setGeneratedPk(null);
+    }
+  }, [generatedPk]);
 
   return (
     <WalletContext.Provider
@@ -156,7 +238,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         isConnecting,
         isCorrectChain,
         error,
+        walletMode,
         connect,
+        generateWallet,
+        exportKey,
+        importKey,
         switchChain,
         disconnect,
       }}

@@ -1,112 +1,87 @@
 # BenchSeal
 
-A decentralized AI benchmark certification platform built on [GenLayer](https://genlayer.com). Model evaluation runs are committed on-chain, scored by validator consensus, and sealed into immutable leaderboards.
+BenchSeal is a GenLayer application that lets AI researchers and benchmark owners publish tamper-proof model evaluation results on-chain. A model lab submits their run, GenLayer validators independently score it, and consensus seals the result — no single party controls the outcome.
 
-## How it works
+## The problem
 
-1. **Register a Benchmark** — define evaluation dimensions and a rubric URL
-2. **Publish a Version** — pin a task manifest to make the benchmark scoreable
-3. **Submit a Run** — commit an off-chain model run (manifest URL + sample bundle URL)
-4. **Trigger Scoring** — GenLayer validators independently score each semantic dimension (bands 0-4) via `gl.exec_prompt`, reach consensus, and write the result on-chain
-5. **Seal the Leaderboard** — freeze a version's rankings into an immutable snapshot
+Model evaluation is self-reported. Labs run their own benchmarks, submit their own numbers, and the community largely has to take them at face value. Even third-party evaluations rely on a single organisation's judgment. There is no mechanism that requires independent agreement before a result is accepted.
 
-## Stack
+## Why GenLayer
 
-| Layer | Technology |
-|---|---|
-| Smart contract | Python — GenLayer Intelligent Contract |
-| Consensus | GenLayer StudioNet (chain 61999) |
-| Frontend | Next.js 16, React 19, TypeScript |
-| Styling | Tailwind CSS v4, custom glassmorphism design system |
-| Wallet | Injected wallet via `window.ethereum` (genlayer-js 1.1.8) |
+Without consensus, certification is just notarisation — any blockchain can timestamp a score, but none can verify it. GenLayer validators each independently run the scoring prompt against the submitted sample bundle and must agree on the dimension bands before the transaction finalises. The equivalence principle used is `prompt_comparative`: validators must match on the integer band values (0–4) for each named dimension. A majority that disagrees means the transaction returns UNDETERMINED and the caller retries. This is not possible with a deterministic smart contract.
 
-## Project structure
+The counterfactual is plain: remove consensus and the contract becomes a registry where anyone writes any score they claim is correct.
+
+## How consensus is used
+
+`score_run` calls `gl.eq_principle.prompt_comparative(leader, "The dimension_bands integer values (0-4) for each named dimension must match exactly")`. The leader function runs the scoring LLM prompt and strips JSON fences. Validators run the same prompt independently. If they agree on the dimension bands, the transaction finalises and the run is SEALED. If they disagree, the transaction is UNDETERMINED.
+
+What is deliberately deterministic: all state mutations (creating benchmarks, committing runs, invalidating runs) are pure JSON writes with no LLM involvement. Consensus is only used in `score_run`.
+
+## Architecture
 
 ```
-benchseal/
-├── contracts/
-│   └── benchseal.py        # GenLayer contract
-└── apps/web/               # Next.js frontend
-    ├── app/                # Pages (registry, benchmarks, runs, scoring, leaderboards)
-    ├── components/         # WalletBar, WalletProvider, ContractGuard
-    └── lib/genlayer/       # Contract client, RPC config, finality polling
+Caller (browser)
+    |
+    | writeContract(score_run)
+    v
+GenLayer Node (leader)
+    |-- exec scoring prompt
+    |-- returns dimension_bands JSON
+    v
+GenLayer Validators (parallel)
+    |-- each runs same prompt independently
+    |-- eq_principle checks band agreement
+    v
+FINALIZED → run status = SEALED, score written on-chain
 ```
 
-## Getting started
+## Two-wallet model
 
-### Prerequisites
+The app supports two connection modes:
 
-- Node.js 20+
-- A wallet connected to GenLayer StudioNet (chain 61999, RPC `https://studio.genlayer.com/api`)
-- A deployed `benchseal.py` contract (deploy via [GenLayer Studio](https://studio.genlayer.com))
+- **Injected wallet** (MetaMask, any EIP-1193 provider): standard web3 connection. Chain must be StudioNet (61999).
+- **Browser wallet** (generated): a private key is created in-browser with `generatePrivateKey()` from genlayer-js and stored in `localStorage` under `benchseal_wallet_v1`. No extension required. Users should export the key before clearing browser storage.
 
-### Install & run
+## Deployed contract
+
+- Address: `0x52ee02304de263C938b1c07a548638ca936fc1F4`
+- Chain: StudioNet (chain ID 61999)
+- Explorer: https://studio.genlayer.com/transactions
+
+## Setup
 
 ```bash
 cd apps/web
+cp .env.example .env.local
+# Fill in NEXT_PUBLIC_CONTRACT_ADDRESS and NEXT_PUBLIC_GENLAYER_ENDPOINT
 npm install
-```
-
-Create `.env.local`:
-
-```env
-NEXT_PUBLIC_GENLAYER_CHAIN=studionet
-NEXT_PUBLIC_GENLAYER_ENDPOINT=https://studio.genlayer.com/api
-NEXT_PUBLIC_BENCHSEAL_CONTRACT=0xYOUR_CONTRACT_ADDRESS
-NEXT_PUBLIC_BENCHSEAL_DATA=live
-```
-
-```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Required env vars:
+- `NEXT_PUBLIC_CONTRACT_ADDRESS` — deployed contract address
+- `NEXT_PUBLIC_GENLAYER_ENDPOINT` — GenLayer JSON-RPC endpoint (e.g. https://studio.genlayer.com/api)
 
-### Deploy the contract
+## Tests
 
-1. Open [studio.genlayer.com](https://studio.genlayer.com)
-2. Paste `contracts/benchseal.py`
-3. Deploy — copy the contract address into `.env.local`
+Tests live in `tests/direct/` and use the `genlayer_test` direct-mode framework (not yet wired to a live VM in this environment). 27 tests across 6 classes: `TestCreateBenchmark`, `TestPublishVersion`, `TestCommitRun`, `TestScoreRun`, `TestSealLeaderboard`, `TestInvalidateRun`, `TestViews`.
 
-## Contract API
+```bash
+pip install genlayer-test pytest
+pytest tests/direct/
+```
 
-| Method | Type | Description |
-|---|---|---|
-| `create_benchmark` | write | Register a new benchmark with dimensions and rubric |
-| `publish_version` | write | Pin a task manifest to unlock run submission |
-| `commit_run` | write | Submit an off-chain model run for scoring |
-| `score_run` | write (consensus) | Validators score each dimension, result written on-chain |
-| `seal_leaderboard` | write | Freeze a version's rankings as an immutable snapshot |
-| `invalidate_run` | write | Mark a run invalid (benchmark owner only) |
-| `get_benchmark` | view | Fetch benchmark metadata |
-| `get_run` | view | Fetch run details and scores |
-| `list_benchmarks` | view | Paginated benchmark list |
-| `list_runs` | view | Runs for a benchmark |
-| `list_snapshots` | view | Sealed leaderboard snapshots |
+## Honest limits
 
-## Scoring
+- **Scoring requires inline content**: the contract VM cannot reliably fetch URLs at runtime in the current StudioNet version. Sample bundle content and rubric content must be passed directly to `score_run`. The URLs are stored for audit trail purposes.
+- **UNDETERMINED is retryable, not auto-retried**: when validators disagree, the contract returns the status to the caller and the UI shows a "please retry" message. The contract does not retry internally.
+- **Exemplar store grows unboundedly**: every sealed run appends exemplars to `exemplars_json`. There is no pruning mechanism yet.
+- **Generated wallet security**: the browser wallet key is stored in `localStorage` in plaintext. It is suitable for testnet use. Export and back up the key if you submit anything you want to recover.
 
-Each dimension is scored on a 0-4 band by GenLayer validators:
+## What's next
 
-| Band | Meaning |
-|---|---|
-| 0 | Completely fails |
-| 1 | Mostly fails |
-| 2 | Mixed results |
-| 3 | Mostly succeeds |
-| 4 | Consistently exceeds expectations |
-
-Bands are averaged and converted to basis points (0-10000). Consensus requires validator agreement on the band values.
-
-## Environment variables
-
-| Variable | Description |
-|---|---|
-| `NEXT_PUBLIC_GENLAYER_CHAIN` | Chain name (`studionet`) |
-| `NEXT_PUBLIC_GENLAYER_ENDPOINT` | RPC endpoint (used server-side; browser uses `/api/rpc` proxy) |
-| `NEXT_PUBLIC_BENCHSEAL_CONTRACT` | Deployed contract address |
-| `NEXT_PUBLIC_BENCHSEAL_DATA` | Set to `live` to read from chain |
-
-## License
-
-MIT
+- URL fetch support when GenLayer runtime supports it
+- Exemplar pruning / relevance ranking (currently first-in, first-out)
+- Staking/slashing for run submitters who submit fraudulent bundles
+- Multi-sig benchmark ownership

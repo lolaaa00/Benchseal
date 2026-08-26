@@ -1,7 +1,7 @@
 // Typed contract views, write helper, FINALIZED + GenVM check
 
 import { getReadClient } from "./read-client";
-import { createInjectedClient } from "./client";
+import { createWriteClient } from "./client";
 import { requireContractAddress } from "./data-source";
 import { parseLeaderResult, ExecutionResult } from "./execution";
 import { POLL_INTERVAL_MS, POLL_MAX_RETRIES } from "./config";
@@ -133,9 +133,10 @@ export async function previewExemplars(
 export async function writeContract(
   method: string,
   args: unknown[],
-  onTxHash?: (hash: string) => void
+  onTxHash?: (hash: string) => void,
+  onStatusChange?: (status: string) => void,
 ): Promise<ExecutionResult> {
-  const client = await createInjectedClient();
+  const client = await createWriteClient();
   const address = requireContractAddress() as `0x${string}`;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -143,12 +144,12 @@ export async function writeContract(
     address,
     functionName: method,
     args: args as never[],
+    value: BigInt(0),
   });
 
-  // Notify caller immediately so UI can show progress
   onTxHash?.(txHash as string);
+  onStatusChange?.("PENDING");
 
-  // Poll for FINALIZED
   let retries = 0;
   while (retries < POLL_MAX_RETRIES) {
     await sleep(POLL_INTERVAL_MS);
@@ -156,13 +157,16 @@ export async function writeContract(
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const tx = await (client as any).getTransaction({ hash: txHash });
-      console.debug("[BenchSeal] tx poll", JSON.stringify(tx, null, 2));
       const status = (tx?.status as string | undefined)?.toUpperCase();
+      if (status) onStatusChange?.(status);
       if (status === "FINALIZED") {
         return parseLeaderResult(tx);
       }
       if (status === "ROLLBACK" || status === "FAILED") {
         return { status: "ROLLBACK", returnValue: null, errorMessage: "Transaction rolled back", rawExecution: tx };
+      }
+      if (status === "UNDETERMINED" || status === "VALIDATORS_TIMEOUT" || status === "LEADER_TIMEOUT") {
+        return { status: "ROLLBACK", returnValue: null, errorMessage: `Consensus not reached (${status}) — please retry`, rawExecution: tx };
       }
     } catch {
       // transient error — keep polling
@@ -190,9 +194,10 @@ export async function createBenchmark(
   rubricDigest: string,
   dimensionsJson: string,
   samplingPolicyJson: string,
-  onTxHash?: (h: string) => void
+  onTxHash?: (h: string) => void,
+  onStatusChange?: (status: string) => void,
 ): Promise<ExecutionResult> {
-  return writeContract("create_benchmark", [name, rubricUrl, rubricDigest, dimensionsJson, samplingPolicyJson], onTxHash);
+  return writeContract("create_benchmark", [name, rubricUrl, rubricDigest, dimensionsJson, samplingPolicyJson], onTxHash, onStatusChange);
 }
 
 export async function publishVersion(
@@ -200,9 +205,10 @@ export async function publishVersion(
   taskManifestUrl: string,
   taskManifestDigest: string,
   versionNote: string,
-  onTxHash?: (h: string) => void
+  onTxHash?: (h: string) => void,
+  onStatusChange?: (status: string) => void,
 ): Promise<ExecutionResult> {
-  return writeContract("publish_version", [benchmarkId, taskManifestUrl, taskManifestDigest, versionNote], onTxHash);
+  return writeContract("publish_version", [benchmarkId, taskManifestUrl, taskManifestDigest, versionNote], onTxHash, onStatusChange);
 }
 
 export async function commitRun(
@@ -214,30 +220,39 @@ export async function commitRun(
   deterministicMetricsJson: string,
   sampleBundleUrl: string,
   sampleBundleDigest: string,
-  onTxHash?: (h: string) => void
+  onTxHash?: (h: string) => void,
+  onStatusChange?: (status: string) => void,
 ): Promise<ExecutionResult> {
-  return writeContract("commit_run", [benchmarkId, version, modelName, runManifestUrl, runManifestDigest, deterministicMetricsJson, sampleBundleUrl, sampleBundleDigest], onTxHash);
+  return writeContract("commit_run", [benchmarkId, version, modelName, runManifestUrl, runManifestDigest, deterministicMetricsJson, sampleBundleUrl, sampleBundleDigest], onTxHash, onStatusChange);
 }
 
-export async function scoreRun(runId: number, sampleBundleContent = "", rubricContent = "", onTxHash?: (h: string) => void): Promise<ExecutionResult> {
-  return writeContract("score_run", [runId, sampleBundleContent, rubricContent], onTxHash);
+export async function scoreRun(
+  runId: number,
+  sampleBundleContent = "",
+  rubricContent = "",
+  onTxHash?: (h: string) => void,
+  onStatusChange?: (status: string) => void,
+): Promise<ExecutionResult> {
+  return writeContract("score_run", [runId, sampleBundleContent, rubricContent], onTxHash, onStatusChange);
 }
 
 export async function sealLeaderboard(
   benchmarkId: number,
   version: number,
   orderedRunIdsJson: string,
-  onTxHash?: (h: string) => void
+  onTxHash?: (h: string) => void,
+  onStatusChange?: (status: string) => void,
 ): Promise<ExecutionResult> {
-  return writeContract("seal_leaderboard", [benchmarkId, version, orderedRunIdsJson], onTxHash);
+  return writeContract("seal_leaderboard", [benchmarkId, version, orderedRunIdsJson], onTxHash, onStatusChange);
 }
 
 export async function invalidateRun(
   runId: number,
   publicReasonUrl: string,
-  onTxHash?: (h: string) => void
+  onTxHash?: (h: string) => void,
+  onStatusChange?: (status: string) => void,
 ): Promise<ExecutionResult> {
-  return writeContract("invalidate_run", [runId, publicReasonUrl], onTxHash);
+  return writeContract("invalidate_run", [runId, publicReasonUrl], onTxHash, onStatusChange);
 }
 
 export function runStatusLabel(status: RunStatusValue): string {

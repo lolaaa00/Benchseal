@@ -16,6 +16,7 @@ import {
 } from "@/lib/genlayer/contract";
 import { useWallet } from "@/components/WalletProvider";
 import { ContractGuard } from "@/components/ContractGuard";
+import { TxStatus } from "@/components/TxStatus";
 
 function BandChip({ band }: { band: number }) {
   return <span className={`band-chip band-${band}`}>{band}</span>;
@@ -36,6 +37,7 @@ function ScoreRoom({ runId }: { runId: number }) {
   const [loading, setLoading] = useState(true);
   const [scoring, setScoring] = useState(false);
   const [scoreTxHash, setScoreTxHash] = useState<string | null>(null);
+  const [scoreTxStatus, setScoreTxStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scoreResult, setScoreResult] = useState<string | null>(null);
 
@@ -68,7 +70,11 @@ function ScoreRoom({ runId }: { runId: number }) {
     setScoreResult(null);
     setScoring(true);
     try {
-      const exec = await scoreRun(runId, "", "", (hash) => setScoreTxHash(hash));
+      const exec = await scoreRun(runId, "", "", (hash) => {
+        setScoreTxHash(hash);
+        sessionStorage.setItem("benchseal_pending_tx_score_run", JSON.stringify({ txHash: hash, ts: Date.now() }));
+      }, (status) => setScoreTxStatus(status));
+      sessionStorage.removeItem("benchseal_pending_tx_score_run");
       if (exec.status === "SUCCESS") {
         setScoreResult("Scoring complete - reloading...");
         const updated = await getRun(runId);
@@ -226,8 +232,7 @@ function ScoreRoom({ runId }: { runId: number }) {
           <div style={{ ...panelStyle, padding: 24 }}>
             {!account && <div className="error-banner" style={{ marginBottom: 14 }}>Connect wallet to trigger scoring</div>}
             {account && !isCorrectChain && <div className="error-banner" style={{ marginBottom: 14 }}>Switch to StudioNet (chain 61999)</div>}
-            {error && <div className="error-banner" style={{ marginBottom: 14 }}>{error}</div>}
-            {scoreResult && <div className="success-banner" style={{ marginBottom: 14 }}>{scoreResult}</div>}
+            {scoreResult && <div className="success-banner" style={{ marginBottom: 14 }} aria-live="polite">{scoreResult}</div>}
 
             <button
               className="btn-p"
@@ -242,19 +247,9 @@ function ScoreRoom({ runId }: { runId: number }) {
                 : "Run is " + runStatusLabel(run.status as 0)}
             </button>
 
-            {scoring && scoreTxHash && (
-              <div style={{ marginTop: 12, padding: "10px 14px", background: "rgba(78,71,160,.25)", border: "1px solid rgba(201,195,232,.2)", borderRadius: 12 }}>
-                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--orange)", marginBottom: 4 }}>
-                  Transaction submitted - validators are scoring...
-                </div>
-                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 9, color: "var(--ink-faint)", wordBreak: "break-all", marginBottom: 4 }}>
-                  {scoreTxHash}
-                </div>
-                <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: "var(--ink-faint)" }}>
-                  Consensus scoring takes 1-3 minutes. Page will update automatically.
-                </div>
-              </div>
-            )}
+            <div aria-live="polite" style={{ marginTop: 12 }}>
+              <TxStatus txHash={scoreTxHash} status={scoreTxStatus} error={error} />
+            </div>
 
             {run.status === RunStatus.SCORING && !scoring && (
               <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--ink-faint)", marginTop: 10, marginBottom: 0 }}>

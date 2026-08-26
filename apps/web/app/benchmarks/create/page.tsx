@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { createBenchmark, listBenchmarks } from "@/lib/genlayer/contract";
 import { useWallet } from "@/components/WalletProvider";
+import { TxStatus } from "@/components/TxStatus";
 
 const labelStyle: React.CSSProperties = {
   fontFamily: "Sora, sans-serif",
@@ -34,6 +35,7 @@ export default function CreateBenchmarkPage() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [txStatus, setTxStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
 
@@ -61,9 +63,14 @@ export default function CreateBenchmarkPage() {
         form.rubricDigest,
         JSON.stringify(dims),
         policy,
-        (hash) => setTxHash(hash)
+        (hash) => {
+          setTxHash(hash);
+          sessionStorage.setItem("benchseal_pending_tx_create_benchmark", JSON.stringify({ txHash: hash, ts: Date.now() }));
+        },
+        (status) => setTxStatus(status),
       );
 
+      sessionStorage.removeItem("benchseal_pending_tx_create_benchmark");
       if (exec.status === "ROLLBACK") {
         setError(exec.errorMessage ?? "Transaction rolled back");
         return;
@@ -172,22 +179,10 @@ export default function CreateBenchmarkPage() {
             />
           </div>
 
-          {error && <div className="error-banner">{error}</div>}
-          {result && <div className="success-banner">{result} - redirecting...</div>}
-
-          {submitting && txHash && (
-            <div style={{ padding: "12px 16px", background: "rgba(78,71,160,.25)", border: "1px solid rgba(201,195,232,.2)", borderRadius: 12 }}>
-              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--orange)", marginBottom: 6 }}>
-                Transaction submitted - waiting for consensus...
-              </div>
-              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", wordBreak: "break-all" }}>
-                {txHash}
-              </div>
-              <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: "var(--ink-faint)", marginTop: 6 }}>
-                GenLayer consensus typically takes 30-90 seconds. This page will redirect automatically.
-              </div>
-            </div>
-          )}
+          {result && <div className="success-banner" aria-live="polite">{result} - redirecting...</div>}
+          <div aria-live="polite">
+            <TxStatus txHash={txHash} status={txStatus} error={error} />
+          </div>
 
           <div style={{ display: "flex", gap: 12, paddingTop: 4 }}>
             <button type="submit" className="btn-p" disabled={!canSubmit || submitting}>
