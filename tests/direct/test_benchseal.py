@@ -1,4 +1,5 @@
 """Direct-mode tests for BenchSeal contract."""
+import hashlib
 import json
 import pytest
 
@@ -10,12 +11,20 @@ import pytest
 DIMS = json.dumps(["factual_grounding", "instruction_adherence"])
 POLICY = json.dumps({"sample_rate": 0.1})
 RUBRIC_URL = "https://example.com/rubric.md"
-RUBRIC_DIGEST = "sha256:abc123"
 MANIFEST_URL = "https://example.com/manifest.json"
-MANIFEST_DIGEST = "sha256:def456"
 SAMPLE_URL = "https://example.com/samples.json"
-SAMPLE_DIGEST = "sha256:ghi789"
 METRICS = json.dumps({"accuracy": 0.82})
+
+# Content strings whose sha256 digests are stored in the contract
+RUBRIC_CONTENT = "rubric content for testing"
+SAMPLE_CONTENT = "sample bundle content for testing"
+
+def _sha256(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+
+RUBRIC_DIGEST = _sha256(RUBRIC_CONTENT)
+SAMPLE_DIGEST = _sha256(SAMPLE_CONTENT)
+MANIFEST_DIGEST = "sha256:" + "b" * 64
 
 GOOD_SCORE_JSON = json.dumps({
     "ok": True,
@@ -212,7 +221,7 @@ class TestScoreRun:
         # Set up LLM mock to return good JSON
         direct_vm.mock_llm(GOOD_SCORE_JSON)
         direct_vm.prank(direct_alice)
-        contract.score_run(rid, "sample content", "rubric content")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         run = contract.get_run(rid)
         assert run["status"] in (2, 3, 4)  # SCORING, SEALED, or ABSTAINED
 
@@ -224,13 +233,13 @@ class TestScoreRun:
         # Manually set status to SCORING by calling score_run
         direct_vm.mock_llm(GOOD_SCORE_JSON)
         direct_vm.prank(direct_alice)
-        contract.score_run(rid, "content", "rubric")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         # If already SEALED/ABSTAINED, scoring again should revert
         run = contract.get_run(rid)
         if run["status"] != 1:  # not RUN_COMMITTED
             direct_vm.prank(direct_alice)
             with direct_vm.expect_revert("EXPECTED:"):
-                contract.score_run(rid, "content", "rubric")
+                contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
 
     def test_abstains_on_malformed_json(self, direct_vm, direct_alice):
         contract = deploy_contract(direct_vm, direct_alice)
@@ -239,7 +248,7 @@ class TestScoreRun:
         rid = commit_run_helper(contract, direct_vm, direct_alice, bid)
         direct_vm.mock_llm(MALFORMED_SCORE)
         direct_vm.prank(direct_alice)
-        contract.score_run(rid, "sample content", "rubric content")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         run = contract.get_run(rid)
         assert run["status"] == 4  # ABSTAINED
 
@@ -256,7 +265,7 @@ class TestScoreRun:
         })
         direct_vm.mock_llm(missing_dim_json)
         direct_vm.prank(direct_alice)
-        contract.score_run(rid, "content", "rubric")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         run = contract.get_run(rid)
         assert run["status"] == 4  # ABSTAINED
 
@@ -272,7 +281,7 @@ class TestScoreRun:
         })
         direct_vm.mock_llm(bad_band_json)
         direct_vm.prank(direct_alice)
-        contract.score_run(rid, "content", "rubric")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         run = contract.get_run(rid)
         assert run["status"] == 4  # ABSTAINED
 
@@ -283,7 +292,7 @@ class TestScoreRun:
         rid = commit_run_helper(contract, direct_vm, direct_alice, bid)
         direct_vm.mock_llm(GOOD_SCORE_JSON)
         direct_vm.prank(direct_alice)
-        contract.score_run(rid, "content", "rubric")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         run = contract.get_run(rid)
         assert run["status"] == 3  # SEALED
 
@@ -300,7 +309,7 @@ class TestScoreRun:
         })
         direct_vm.mock_llm(perfect_score_json)
         direct_vm.prank(direct_alice)
-        contract.score_run(rid, "content", "rubric")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         run = contract.get_run(rid)
         assert run["status"] == 3  # SEALED
         assert run["final_score_bps"] == 10000
@@ -312,7 +321,7 @@ class TestScoreRun:
         rid = commit_run_helper(contract, direct_vm, direct_alice, bid)
         direct_vm.mock_llm(GOOD_SCORE_JSON)
         direct_vm.prank(direct_alice)
-        contract.score_run(rid, "content", "rubric")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         run = contract.get_run(rid)
         if run["status"] == 3:  # SEALED
             exemplars = contract.preview_exemplars(rid, "factual_grounding", 4)
@@ -331,7 +340,7 @@ class TestSealLeaderboard:
         rid = commit_run_helper(contract, direct_vm, alice, bid)
         direct_vm.mock_llm(GOOD_SCORE_JSON)
         direct_vm.prank(alice)
-        contract.score_run(rid, "content", "rubric")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         return contract, bid, rid
 
     def test_owner_can_seal(self, direct_vm, direct_alice):
@@ -462,7 +471,7 @@ class TestViews:
         rid = commit_run_helper(contract, direct_vm, direct_alice, bid)
         direct_vm.mock_llm(GOOD_SCORE_JSON)
         direct_vm.prank(direct_alice)
-        contract.score_run(rid, "content", "rubric")
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT)
         run = contract.get_run(rid)
         if run["status"] == 3:  # SEALED
             exemplars = contract.preview_exemplars(rid, "factual_grounding", 4)
@@ -478,3 +487,94 @@ class TestViews:
         contract = deploy_contract(direct_vm, direct_alice)
         with direct_vm.expect_revert("EXPECTED:"):
             contract.list_runs(999, 0, 10)
+
+
+# ---------------------------------------------------------------------------
+# TestEvidenceBinding
+# ---------------------------------------------------------------------------
+
+class TestEvidenceBinding:
+    def _setup_run(self, direct_vm, alice):
+        contract = deploy_contract(direct_vm, alice)
+        bid = create_benchmark_helper(contract, direct_vm, alice)
+        publish_version_helper(contract, direct_vm, alice, bid)
+        rid = commit_run_helper(contract, direct_vm, alice, bid)
+        return contract, bid, rid
+
+    def test_wrong_sample_digest_raises_error(self, direct_vm, direct_alice):
+        contract, _bid, rid = self._setup_run(direct_vm, direct_alice)
+        direct_vm.prank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, "wrong content that does not match stored digest", RUBRIC_CONTENT)
+
+    def test_empty_content_raises_error(self, direct_vm, direct_alice):
+        contract, _bid, rid = self._setup_run(direct_vm, direct_alice)
+        direct_vm.prank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, "", RUBRIC_CONTENT)
+
+    def test_malformed_digest_rejected_on_create_benchmark(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        direct_vm.prank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.create_benchmark("Bench", RUBRIC_URL, "sha256:tooshort", DIMS, POLICY)
+
+    def test_malformed_digest_rejected_on_commit_run(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+        direct_vm.prank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.commit_run(
+                bid, 1, "ModelX", MANIFEST_URL, MANIFEST_DIGEST,
+                METRICS, SAMPLE_URL, "notadigest",
+            )
+
+
+# ---------------------------------------------------------------------------
+# TestLeaderboardValidation
+# ---------------------------------------------------------------------------
+
+class TestLeaderboardValidation:
+    def _setup_two_sealed_runs(self, direct_vm, alice):
+        contract = deploy_contract(direct_vm, alice)
+        bid = create_benchmark_helper(contract, direct_vm, alice)
+        publish_version_helper(contract, direct_vm, alice, bid)
+
+        rid0 = commit_run_helper(contract, direct_vm, alice, bid, model="ModelA")
+        direct_vm.mock_llm(json.dumps({
+            "ok": True,
+            "dimension_bands": {"factual_grounding": 4, "instruction_adherence": 4},
+            "reason": "perfect",
+        }))
+        direct_vm.prank(alice)
+        contract.score_run(rid0, SAMPLE_CONTENT, RUBRIC_CONTENT)
+
+        rid1 = commit_run_helper(contract, direct_vm, alice, bid, model="ModelB")
+        direct_vm.mock_llm(json.dumps({
+            "ok": True,
+            "dimension_bands": {"factual_grounding": 2, "instruction_adherence": 2},
+            "reason": "mediocre",
+        }))
+        direct_vm.prank(alice)
+        contract.score_run(rid1, SAMPLE_CONTENT, RUBRIC_CONTENT)
+
+        return contract, bid, rid0, rid1
+
+    def test_leaderboard_wrong_order_rejected(self, direct_vm, direct_alice):
+        contract, bid, rid0, rid1 = self._setup_two_sealed_runs(direct_vm, direct_alice)
+        r0 = contract.get_run(rid0)
+        r1 = contract.get_run(rid1)
+        if r0["status"] == 3 and r1["status"] == 3:
+            # rid0 has higher score; putting lower score first should fail
+            direct_vm.prank(direct_alice)
+            with direct_vm.expect_revert("EXPECTED:"):
+                contract.seal_leaderboard(bid, 1, json.dumps([rid1, rid0]))
+
+    def test_leaderboard_duplicate_run_rejected(self, direct_vm, direct_alice):
+        contract, bid, rid0, _rid1 = self._setup_two_sealed_runs(direct_vm, direct_alice)
+        r0 = contract.get_run(rid0)
+        if r0["status"] == 3:
+            direct_vm.prank(direct_alice)
+            with direct_vm.expect_revert("EXPECTED:"):
+                contract.seal_leaderboard(bid, 1, json.dumps([rid0, rid0]))

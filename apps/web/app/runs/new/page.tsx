@@ -7,15 +7,7 @@ import { useWallet } from "@/components/WalletProvider";
 import { ContractGuard } from "@/components/ContractGuard";
 import { TxStatus } from "@/components/TxStatus";
 import { Suspense } from "react";
-
-function hashText(text: string): string {
-  let h = 0;
-  for (let i = 0; i < text.length; i++) {
-    h = Math.imul(31, h) + text.charCodeAt(i);
-    h = h | 0;
-  }
-  return "sha256-preview:" + Math.abs(h).toString(16).padStart(8, "0");
-}
+import { computeSHA256 } from "@/lib/crypto";
 
 const labelStyle: React.CSSProperties = {
   fontFamily: "Sora, sans-serif",
@@ -80,15 +72,17 @@ function RunSubmitForm() {
 
     try {
       JSON.parse(form.deterministicMetrics);
+      const runManifestDigest = form.runManifestDigest || await computeSHA256(form.runManifestUrl);
+      const sampleBundleDigest = form.sampleBundleDigest || await computeSHA256(form.sampleBundleUrl);
       const exec = await commitRun(
         parseInt(form.benchmarkId, 10),
         parseInt(form.version, 10),
         form.modelName,
         form.runManifestUrl,
-        form.runManifestDigest || hashText(form.runManifestUrl),
+        runManifestDigest,
         form.deterministicMetrics,
         form.sampleBundleUrl,
-        form.sampleBundleDigest || hashText(form.sampleBundleUrl),
+        sampleBundleDigest,
         (hash) => {
           setTxHash(hash);
           sessionStorage.setItem("benchseal_pending_tx_commit_run", JSON.stringify({ txHash: hash, ts: Date.now() }));

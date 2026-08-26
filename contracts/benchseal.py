@@ -20,6 +20,9 @@ from genlayer import *
 
 import json
 import hashlib
+import re
+
+_DIGEST_RE = re.compile(r'^sha256:[0-9a-f]{64}$')
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +84,10 @@ class BenchSeal(gl.Contract):
             return addr.as_hex
         return str(addr)
 
+    def _validate_digest(self, digest: str) -> None:
+        if not _DIGEST_RE.match(digest):
+            raise gl.vm.UserError("EXPECTED: invalid digest format")
+
     def _do_score(self, scoring_prompt: str) -> str:
         def leader() -> str:
             result = gl.exec_prompt(scoring_prompt)
@@ -121,6 +128,7 @@ class BenchSeal(gl.Contract):
             raise gl.vm.UserError("EXPECTED: rubric_url must be 1-2048 characters")
         if not rubric_digest:
             raise gl.vm.UserError("EXPECTED: rubric_digest is required")
+        self._validate_digest(rubric_digest)
         dims = self._parse_dimensions(dimensions_json)
         if len(dims) == 0:
             raise gl.vm.UserError("EXPECTED: dimensions_json must contain at least one dimension")
@@ -172,6 +180,7 @@ class BenchSeal(gl.Contract):
             raise gl.vm.UserError("EXPECTED: task_manifest_url must be 1-2048 characters")
         if not task_manifest_digest:
             raise gl.vm.UserError("EXPECTED: task_manifest_digest is required")
+        self._validate_digest(task_manifest_digest)
         b["current_version"] += 1
         self._save_benchmarks(bs)
         return b["current_version"]
@@ -200,10 +209,12 @@ class BenchSeal(gl.Contract):
             raise gl.vm.UserError("EXPECTED: run_manifest_url required")
         if not run_manifest_digest:
             raise gl.vm.UserError("EXPECTED: run_manifest_digest required")
+        self._validate_digest(run_manifest_digest)
         if not sample_bundle_url or len(sample_bundle_url) > 2048:
             raise gl.vm.UserError("EXPECTED: sample_bundle_url required")
         if not sample_bundle_digest:
             raise gl.vm.UserError("EXPECTED: sample_bundle_digest required")
+        self._validate_digest(sample_bundle_digest)
         if isinstance(deterministic_metrics_json, dict):
             metrics_str = json.dumps(deterministic_metrics_json)
         else:
@@ -257,11 +268,31 @@ class BenchSeal(gl.Contract):
         if not dimensions:
             raise gl.vm.UserError("EXPECTED: Benchmark has no dimensions configured")
 
+        # Reject empty sample bundle content
+        if sample_bundle_content == "":
+            raise gl.vm.UserError("EXPECTED: content must not be empty")
+
+        # Evidence binding: verify content matches stored digest
+        actual_sample_hash = hashlib.sha256(sample_bundle_content.encode()).hexdigest()
+        stored_sample_digest = run["sample_bundle_digest"]
+        if stored_sample_digest.startswith("sha256:"):
+            stored_sample_digest = stored_sample_digest[7:]
+        if actual_sample_hash != stored_sample_digest:
+            raise gl.vm.UserError("EXPECTED: sample bundle digest mismatch")
+
+        if rubric_content:
+            actual_rubric_hash = hashlib.sha256(rubric_content.encode()).hexdigest()
+            stored_rubric_digest = b["rubric_digest"]
+            if stored_rubric_digest.startswith("sha256:"):
+                stored_rubric_digest = stored_rubric_digest[7:]
+            if actual_rubric_hash != stored_rubric_digest:
+                raise gl.vm.UserError("EXPECTED: rubric digest mismatch")
+
         run["status"] = SCORING
         self._save_runs(rs)
 
-        # Use supplied content or fall back to URLs for validators to reference
-        sample_bundle_raw = sample_bundle_content if sample_bundle_content else f"[See sample bundle at: {run['sample_bundle_url']}]"
+        # Use supplied content
+        sample_bundle_raw = sample_bundle_content
         rubric_raw = rubric_content if rubric_content else f"[See rubric at: {b['rubric_url']}]"
 
         # Retrieve exemplars from exemplar store
@@ -414,6 +445,15 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
                 raise gl.vm.UserError("EXPECTED: ordered_run_ids_json must be a JSON array")
 
         rs = self._load_runs()
+
+        # Check for duplicates
+        seen_ids: set = set()
+        for rid_raw in ordered_run_ids:
+            rid = int(rid_raw)
+            if rid in seen_ids:
+                raise gl.vm.UserError(f"EXPECTED: Duplicate run_id {rid} in ordered_run_ids")
+            seen_ids.add(rid)
+
         for rid_raw in ordered_run_ids:
             rid = int(rid_raw)
             if rid < 0 or rid >= len(rs):
@@ -425,6 +465,15 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
                 raise gl.vm.UserError(f"EXPECTED: Run {rid} is not for version {version}")
             if run["status"] != SEALED:
                 raise gl.vm.UserError(f"EXPECTED: Run {rid} is not SEALED (status: {run['status']})")
+
+        # Check scores are in descending order
+        prev_score = None
+        for rid_raw in ordered_run_ids:
+            rid = int(rid_raw)
+            score = rs[rid]["final_score_bps"]
+            if prev_score is not None and score > prev_score:
+                raise gl.vm.UserError("EXPECTED: Run scores must be in descending order")
+            prev_score = score
 
         content = f"{benchmark_id}:{version}:{ordered_run_ids_json}"
         digest = hashlib.sha256(content.encode()).hexdigest()
