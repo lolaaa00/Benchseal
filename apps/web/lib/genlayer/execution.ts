@@ -45,7 +45,11 @@ export function parseLeaderResult(tx: unknown): ExecutionResult {
   }
 
   const t = tx as Record<string, unknown>;
-  const txStatus = (t.status as string | undefined)?.toUpperCase();
+  // genlayer-js on StudioNet puts status as a number and string name in statusName
+  const txStatus = (
+    (t.statusName as string | undefined) ??
+    (typeof t.status === "string" ? t.status : undefined)
+  )?.toUpperCase();
 
   if (txStatus === "ROLLBACK" || txStatus === "FAILED") {
     return {

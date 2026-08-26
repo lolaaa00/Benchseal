@@ -157,7 +157,11 @@ export async function writeContract(
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const tx = await (client as any).getTransaction({ hash: txHash });
-      const status = (tx?.status as string | undefined)?.toUpperCase();
+      // genlayer-js on StudioNet converts status to a number and puts the name in statusName
+      const status = (
+        (tx?.statusName as string | undefined) ??
+        (typeof tx?.status === "string" ? tx.status : undefined)
+      )?.toUpperCase();
       if (status) onStatusChange?.(status);
       if (status === "FINALIZED") {
         return parseLeaderResult(tx);
