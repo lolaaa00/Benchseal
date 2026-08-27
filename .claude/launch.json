@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "benchseal-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "/Users/dami/Downloads/benchseal/apps/web",
+      "port": 3000,
+      "autoPort": true
+    }
+  ]
+}

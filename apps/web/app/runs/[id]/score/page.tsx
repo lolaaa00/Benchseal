@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import {
   getRun,
   getBenchmark,
+  getBenchmarkVersion,
   scoreRun,
   previewExemplars,
   RunInfo,
@@ -19,8 +20,9 @@ import { ContractGuard } from "@/components/ContractGuard";
 import { TxStatus } from "@/components/TxStatus";
 import { computeSHA256 } from "@/lib/crypto";
 
-const MAX_RUBRIC_SIZE = 4000;  // must match contract constant
-const MAX_SAMPLE_SIZE = 8000;  // must match contract constant
+const MAX_RUBRIC_SIZE = 4000;     // must match contract constant
+const MAX_SAMPLE_SIZE = 8000;     // must match contract constant
+const MAX_MANIFEST_SIZE = 8000;   // must match contract constant
 
 function BandChip({ band }: { band: number }) {
   return <span className={`band-chip band-${band}`}>{band}</span>;
@@ -43,10 +45,14 @@ function ScoreRoom({ runId }: { runId: number }) {
   // Evidence inputs
   const [sampleContent, setSampleContent] = useState("");
   const [rubricContent, setRubricContent] = useState("");
+  const [manifestContent, setManifestContent] = useState("");
   const [sampleDigest, setSampleDigest] = useState<string | null>(null);
   const [rubricDigest, setRubricDigest] = useState<string | null>(null);
+  const [manifestDigest, setManifestDigest] = useState<string | null>(null);
   const [sampleDigestMatch, setSampleDigestMatch] = useState<boolean | null>(null);
   const [rubricDigestMatch, setRubricDigestMatch] = useState<boolean | null>(null);
+  const [manifestDigestMatch, setManifestDigestMatch] = useState<boolean | null>(null);
+  const [versionRecord, setVersionRecord] = useState<{ task_manifest_digest: string } | null>(null);
 
   const [scoring, setScoring] = useState(false);
   const [scoreTxHash, setScoreTxHash] = useState<string | null>(null);
@@ -60,6 +66,10 @@ function ScoreRoom({ runId }: { runId: number }) {
         setRun(r);
         const b = await getBenchmark(r.benchmark_id);
         setBenchmark(b);
+        try {
+          const vr = await getBenchmarkVersion(r.benchmark_id, r.version);
+          setVersionRecord(vr as { task_manifest_digest: string });
+        } catch { /* version record may not exist yet */ }
         const dims: string[] = (() => { try { return JSON.parse(b.dimensions_json); } catch { return []; } })();
         const exs: Record<string, string[]> = {};
         await Promise.all(
@@ -101,6 +111,18 @@ function ScoreRoom({ runId }: { runId: number }) {
     }
   }
 
+  async function onManifestChange(content: string) {
+    setManifestContent(content);
+    if (content && versionRecord) {
+      const digest = await computeSHA256(content);
+      setManifestDigest(digest);
+      setManifestDigestMatch(digest === versionRecord.task_manifest_digest);
+    } else {
+      setManifestDigest(null);
+      setManifestDigestMatch(null);
+    }
+  }
+
   async function handleScore() {
     setError(null);
     setScoreResult(null);
@@ -108,11 +130,15 @@ function ScoreRoom({ runId }: { runId: number }) {
     try {
       if (!sampleContent) throw new Error("Sample bundle content is required.");
       if (!rubricContent) throw new Error("Rubric content is required.");
+      if (!manifestContent) throw new Error("Task manifest content is required.");
       if (sampleContent.length > MAX_SAMPLE_SIZE) {
         throw new Error(`Sample content exceeds ${MAX_SAMPLE_SIZE}-character limit.`);
       }
       if (rubricContent.length > MAX_RUBRIC_SIZE) {
         throw new Error(`Rubric content exceeds ${MAX_RUBRIC_SIZE}-character limit.`);
+      }
+      if (manifestContent.length > MAX_MANIFEST_SIZE) {
+        throw new Error(`Task manifest content exceeds ${MAX_MANIFEST_SIZE}-character limit.`);
       }
       if (sampleDigestMatch === false) {
         throw new Error("Sample content digest does not match the stored commitment. Provide the exact content.");
@@ -120,12 +146,16 @@ function ScoreRoom({ runId }: { runId: number }) {
       if (rubricDigestMatch === false) {
         throw new Error("Rubric content digest does not match the stored commitment. Provide the exact rubric.");
       }
+      if (manifestDigestMatch === false) {
+        throw new Error("Task manifest digest does not match the version's stored commitment. Provide the exact manifest.");
+      }
 
       const mode = walletMode === "none" ? undefined : (walletMode as "injected" | "generated");
       const exec = await scoreRun(
         runId,
         sampleContent,
         rubricContent,
+        manifestContent,
         (hash) => {
           setScoreTxHash(hash);
           sessionStorage.setItem("benchseal_pending_tx_score_run", JSON.stringify({ txHash: hash, ts: Date.now() }));
@@ -166,7 +196,8 @@ function ScoreRoom({ runId }: { runId: number }) {
 
   const isSealed = run.status === RunStatus.SEALED;
   const canScore = account && isCorrectChain && run.status === RunStatus.RUN_COMMITTED;
-  const evidenceReady = sampleContent && rubricContent && sampleDigestMatch !== false && rubricDigestMatch !== false;
+  const evidenceReady = sampleContent && rubricContent && manifestContent
+    && sampleDigestMatch !== false && rubricDigestMatch !== false && manifestDigestMatch !== false;
 
   const statusClass =
     isSealed ? "tag-sealed" :
@@ -352,6 +383,16 @@ function ScoreRoom({ runId }: { runId: number }) {
                 <div className="digest" style={{ marginTop: 4, fontSize: 10 }}>{benchmark.rubric_digest}</div>
               </div>
             )}
+
+            {versionRecord && (
+              <div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Task Manifest Digest (v{run.version})</div>
+                <div className="digest" style={{ fontSize: 10 }}>{versionRecord.task_manifest_digest}</div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginTop: 4 }}>
+                  Paste the task manifest content below — its SHA-256 must match this.
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -410,17 +451,43 @@ function ScoreRoom({ runId }: { runId: number }) {
                 )}
               </div>
 
+              <div>
+                <label style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Task Manifest Content
+                  <span style={{ marginLeft: 6, color: "var(--ink-faint)" }}>(max {MAX_MANIFEST_SIZE} chars)</span>
+                </label>
+                <textarea
+                  className="field-input"
+                  rows={6}
+                  placeholder={'Paste the task manifest JSON, e.g. {"tasks":[{"task_id":"t1","prompt":"..."}]}'}
+                  value={manifestContent}
+                  onChange={(e) => onManifestChange(e.target.value)}
+                  style={{ fontSize: 11 }}
+                />
+                {manifestDigest && (
+                  <div style={{ marginTop: 4, fontSize: 10, fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all",
+                    color: manifestDigestMatch === true ? "var(--green)" : manifestDigestMatch === false ? "var(--red, #f56)" : "var(--ink-faint)" }}>
+                    {manifestDigest}
+                    {manifestDigestMatch === true && " ✓ matches version commitment"}
+                    {manifestDigestMatch === false && " ✗ does not match version digest"}
+                  </div>
+                )}
+                <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginTop: 6, marginBottom: 0 }}>
+                  The canonical task inputs the model was given. Sample bundle task IDs must all appear here — this binds scoring to verifiable task-output pairs.
+                </p>
+              </div>
+
               <div style={{ borderTop: "1px solid rgba(201,195,232,.1)", paddingTop: 12 }}>
                 <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>
                   How Scoring Works
                 </div>
                 <ol style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", lineHeight: 1.9, margin: 0, paddingLeft: 16 }}>
-                  <li>You supply the exact sample bundle and rubric content</li>
-                  <li>Contract verifies both against their stored SHA-256 commitments</li>
-                  <li>GenLayer validators independently judge each dimension (band 0–4)</li>
-                  <li>Consensus requires validator agreement on dimension bands</li>
-                  <li>Equal-weight average score computed in basis points (0–10000)</li>
-                  <li>Result written on-chain, sealed</li>
+                  <li>Supply sample bundle, rubric, and task manifest content</li>
+                  <li>Contract verifies all three against their SHA-256 commitments</li>
+                  <li>Sample task IDs verified against manifest — provenance check</li>
+                  <li>Validators score each task-output pair independently (band 0–4)</li>
+                  <li>Consensus requires agreement on dimension bands</li>
+                  <li>Equal-weight average score sealed on-chain</li>
                 </ol>
               </div>
             </div>

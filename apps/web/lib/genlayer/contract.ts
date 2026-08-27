@@ -239,13 +239,15 @@ export async function scoreRun(
   runId: number,
   sampleBundleContent: string,
   rubricContent: string,
+  taskManifestContent: string,
   onTxHash?: (h: string) => void,
   onStatusChange?: (status: string) => void,
   walletMode?: "injected" | "generated",
 ): Promise<ExecutionResult> {
   if (!sampleBundleContent) throw new Error("sample_bundle_content is required");
   if (!rubricContent) throw new Error("rubric_content is required");
-  return writeContract("score_run", [runId, sampleBundleContent, rubricContent], onTxHash, onStatusChange, walletMode);
+  if (!taskManifestContent) throw new Error("task_manifest_content is required");
+  return writeContract("score_run", [runId, sampleBundleContent, rubricContent, taskManifestContent], onTxHash, onStatusChange, walletMode);
 }
 
 export async function sealLeaderboard(

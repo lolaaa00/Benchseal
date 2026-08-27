@@ -38,39 +38,37 @@ Score each dimension 0-4:
 - instruction_adherence: Did the model follow the prompt format?
 - usefulness: Is the answer actionable?`;
 
-const MANIFEST_CONTENT = JSON.stringify({
-  benchmark: "Demo-MathBench",
-  model: "Demo-Model-v1",
-  version: 1,
-  tasks: 50,
-  temperature: 0.0,
-  timestamp: new Date().toISOString(),
+// Task manifest: canonical task inputs the model was given
+const TASK_MANIFEST_CONTENT = JSON.stringify({
+  tasks: [
+    { task_id: "t1", prompt: "What is 12 * 8?" },
+    { task_id: "t2", prompt: "Solve x^2 = 16" },
+    { task_id: "t3", prompt: "What is the derivative of x^3?" },
+  ],
 });
 
-const SAMPLE_CONTENT = `Q: What is 12 * 8?
-A: 96
-
-Q: Solve x^2 = 16
-A: x = ±4
-
-Q: What is the derivative of x^3?
-A: 3x^2`;
+// Sample bundle: structured task-output pairs verified against manifest task IDs
+const SAMPLE_CONTENT = JSON.stringify([
+  { task_id: "t1", input: "What is 12 * 8?", output: "96" },
+  { task_id: "t2", input: "Solve x^2 = 16", output: "x = ±4" },
+  { task_id: "t3", input: "What is the derivative of x^3?", output: "3x^2" },
+]);
 
 function sha256hex(text) {
   return "sha256:" + createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 const RUBRIC_DIGEST = sha256hex(RUBRIC_CONTENT);
-const MANIFEST_DIGEST = sha256hex(MANIFEST_CONTENT);
+const MANIFEST_DIGEST = sha256hex(TASK_MANIFEST_CONTENT);
 const SAMPLE_DIGEST = sha256hex(SAMPLE_CONTENT);
 
 console.log("=== BenchSeal StudioNet Exercise ===");
 console.log(`Contract : ${CONTRACT_ADDRESS}`);
 console.log(`Endpoint : ${ENDPOINT}`);
 console.log(`Chain    : ${CHAIN_ID}`);
-console.log(`Rubric digest  : ${RUBRIC_DIGEST}`);
-console.log(`Manifest digest: ${MANIFEST_DIGEST}`);
-console.log(`Sample digest  : ${SAMPLE_DIGEST}`);
+console.log(`Rubric digest          : ${RUBRIC_DIGEST}`);
+console.log(`Task manifest digest   : ${MANIFEST_DIGEST}`);
+console.log(`Sample bundle digest   : ${SAMPLE_DIGEST}`);
 console.log("");
 
 const account = createAccount(PRIVATE_KEY);
@@ -185,9 +183,9 @@ try {
   const runId = r3?.id ?? 0;
   console.log(`  run_id = ${runId}`);
 
-  // 4. Score run (requires consensus — content must match committed digests)
+  // 4. Score run (requires consensus — all three content args verified against on-chain digests)
   console.log("\n[4] score_run (consensus — may take several minutes)");
-  await write("score_run", [runId, SAMPLE_CONTENT, RUBRIC_CONTENT]);
+  await write("score_run", [runId, SAMPLE_CONTENT, RUBRIC_CONTENT, TASK_MANIFEST_CONTENT]);
 
   // 5. Read back
   console.log("\n[5] Read state");
