@@ -53,7 +53,7 @@ where `N` is the number of dimensions and each band is an integer 0–4. Scores 
 
 | Field | Value |
 |---|---|
-| Address | `0xCf5Aeb59Ae91095b7Ff22d8d5DCbD8312f6EaCc4` |
+| Address | `0xB20Ec470ca31bB75f115Ea178d962994393a33E8` |
 | Chain | StudioNet (chain ID 61999) |
 | Explorer | https://studio.genlayer.com/transactions |
 
@@ -77,7 +77,7 @@ npm ci
 cp apps/web/.env.example apps/web/.env.local
 # Edit apps/web/.env.local:
 #   NEXT_PUBLIC_GENLAYER_ENDPOINT=https://studio.genlayer.com/api
-#   NEXT_PUBLIC_BENCHSEAL_CONTRACT=0xCf5Aeb59Ae91095b7Ff22d8d5DCbD8312f6EaCc4
+#   NEXT_PUBLIC_BENCHSEAL_CONTRACT=0xB20Ec470ca31bB75f115Ea178d962994393a33E8
 #   NEXT_PUBLIC_BENCHSEAL_DATA=live
 
 # 3. Run the frontend
@@ -104,7 +104,7 @@ Runs the full lifecycle (create → publish → commit → score → leaderboard
 ```bash
 GENLAYER_PRIVATE_KEY=0x<your_key> \
   node scripts/exercise-studionet.mjs \
-  0xCf5Aeb59Ae91095b7Ff22d8d5DCbD8312f6EaCc4
+  0xB20Ec470ca31bB75f115Ea178d962994393a33E8
 ```
 
 The script computes real SHA-256 digests from inline content strings and exercises every write method. `score_run` triggers consensus and may take a few minutes.
