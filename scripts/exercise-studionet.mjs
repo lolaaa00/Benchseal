@@ -54,6 +54,15 @@ const SAMPLE_CONTENT = JSON.stringify([
   { task_id: "t3", input: "What is the derivative of x^3?", output: "3x^2" },
 ]);
 
+// Run manifest: claimed provenance committed at submit time, verified at score time
+const RUN_MANIFEST_CONTENT = JSON.stringify({
+  model: "Demo-Model-v1",
+  inference_date: new Date().toISOString().slice(0, 10),
+  temperature: 0.0,
+  hardware: "A100",
+  benchmark_id: null, // filled in at runtime
+});
+
 function sha256hex(text) {
   return "sha256:" + createHash("sha256").update(text, "utf8").digest("hex");
 }
@@ -61,6 +70,7 @@ function sha256hex(text) {
 const RUBRIC_DIGEST = sha256hex(RUBRIC_CONTENT);
 const MANIFEST_DIGEST = sha256hex(TASK_MANIFEST_CONTENT);
 const SAMPLE_DIGEST = sha256hex(SAMPLE_CONTENT);
+const RUN_MANIFEST_DIGEST = sha256hex(RUN_MANIFEST_CONTENT);
 
 console.log("=== BenchSeal StudioNet Exercise ===");
 console.log(`Contract : ${CONTRACT_ADDRESS}`);
@@ -69,6 +79,7 @@ console.log(`Chain    : ${CHAIN_ID}`);
 console.log(`Rubric digest          : ${RUBRIC_DIGEST}`);
 console.log(`Task manifest digest   : ${MANIFEST_DIGEST}`);
 console.log(`Sample bundle digest   : ${SAMPLE_DIGEST}`);
+console.log(`Run manifest digest    : ${RUN_MANIFEST_DIGEST}`);
 console.log("");
 
 const account = createAccount(PRIVATE_KEY);
@@ -175,7 +186,7 @@ try {
     version,
     "Demo-Model-v1",
     "https://gist.github.com/benchseal/demo-run-manifest.json",
-    MANIFEST_DIGEST,
+    RUN_MANIFEST_DIGEST,
     JSON.stringify({ accuracy: 0.82, exact_match: 0.71 }),
     "https://gist.github.com/benchseal/demo-samples.json",
     SAMPLE_DIGEST,
@@ -183,9 +194,9 @@ try {
   const runId = r3?.id ?? 0;
   console.log(`  run_id = ${runId}`);
 
-  // 4. Score run (requires consensus — all three content args verified against on-chain digests)
+  // 4. Score run (requires consensus — all four content args verified against on-chain digests)
   console.log("\n[4] score_run (consensus — may take several minutes)");
-  await write("score_run", [runId, SAMPLE_CONTENT, RUBRIC_CONTENT, TASK_MANIFEST_CONTENT]);
+  await write("score_run", [runId, SAMPLE_CONTENT, RUBRIC_CONTENT, TASK_MANIFEST_CONTENT, RUN_MANIFEST_CONTENT]);
 
   // 5. Read back
   console.log("\n[5] Read state");

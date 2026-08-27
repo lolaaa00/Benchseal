@@ -20,9 +20,10 @@ import { ContractGuard } from "@/components/ContractGuard";
 import { TxStatus } from "@/components/TxStatus";
 import { computeSHA256 } from "@/lib/crypto";
 
-const MAX_RUBRIC_SIZE = 4000;     // must match contract constant
-const MAX_SAMPLE_SIZE = 8000;     // must match contract constant
-const MAX_MANIFEST_SIZE = 8000;   // must match contract constant
+const MAX_RUBRIC_SIZE = 4000;         // must match contract constant
+const MAX_SAMPLE_SIZE = 8000;         // must match contract constant
+const MAX_MANIFEST_SIZE = 8000;       // must match contract constant
+const MAX_RUN_MANIFEST_SIZE = 4000;   // must match contract constant
 
 function BandChip({ band }: { band: number }) {
   return <span className={`band-chip band-${band}`}>{band}</span>;
@@ -46,12 +47,15 @@ function ScoreRoom({ runId }: { runId: number }) {
   const [sampleContent, setSampleContent] = useState("");
   const [rubricContent, setRubricContent] = useState("");
   const [manifestContent, setManifestContent] = useState("");
+  const [runManifestContent, setRunManifestContent] = useState("");
   const [sampleDigest, setSampleDigest] = useState<string | null>(null);
   const [rubricDigest, setRubricDigest] = useState<string | null>(null);
   const [manifestDigest, setManifestDigest] = useState<string | null>(null);
+  const [runManifestDigest, setRunManifestDigest] = useState<string | null>(null);
   const [sampleDigestMatch, setSampleDigestMatch] = useState<boolean | null>(null);
   const [rubricDigestMatch, setRubricDigestMatch] = useState<boolean | null>(null);
   const [manifestDigestMatch, setManifestDigestMatch] = useState<boolean | null>(null);
+  const [runManifestDigestMatch, setRunManifestDigestMatch] = useState<boolean | null>(null);
   const [versionRecord, setVersionRecord] = useState<{ task_manifest_digest: string } | null>(null);
 
   const [scoring, setScoring] = useState(false);
@@ -123,6 +127,18 @@ function ScoreRoom({ runId }: { runId: number }) {
     }
   }
 
+  async function onRunManifestChange(content: string) {
+    setRunManifestContent(content);
+    if (content && run) {
+      const digest = await computeSHA256(content);
+      setRunManifestDigest(digest);
+      setRunManifestDigestMatch(digest === run.run_manifest_digest);
+    } else {
+      setRunManifestDigest(null);
+      setRunManifestDigestMatch(null);
+    }
+  }
+
   async function handleScore() {
     setError(null);
     setScoreResult(null);
@@ -131,6 +147,7 @@ function ScoreRoom({ runId }: { runId: number }) {
       if (!sampleContent) throw new Error("Sample bundle content is required.");
       if (!rubricContent) throw new Error("Rubric content is required.");
       if (!manifestContent) throw new Error("Task manifest content is required.");
+      if (!runManifestContent) throw new Error("Run manifest content is required.");
       if (sampleContent.length > MAX_SAMPLE_SIZE) {
         throw new Error(`Sample content exceeds ${MAX_SAMPLE_SIZE}-character limit.`);
       }
@@ -139,6 +156,9 @@ function ScoreRoom({ runId }: { runId: number }) {
       }
       if (manifestContent.length > MAX_MANIFEST_SIZE) {
         throw new Error(`Task manifest content exceeds ${MAX_MANIFEST_SIZE}-character limit.`);
+      }
+      if (runManifestContent.length > MAX_RUN_MANIFEST_SIZE) {
+        throw new Error(`Run manifest content exceeds ${MAX_RUN_MANIFEST_SIZE}-character limit.`);
       }
       if (sampleDigestMatch === false) {
         throw new Error("Sample content digest does not match the stored commitment. Provide the exact content.");
@@ -149,6 +169,9 @@ function ScoreRoom({ runId }: { runId: number }) {
       if (manifestDigestMatch === false) {
         throw new Error("Task manifest digest does not match the version's stored commitment. Provide the exact manifest.");
       }
+      if (runManifestDigestMatch === false) {
+        throw new Error("Run manifest digest does not match the stored commitment. Provide the exact run manifest.");
+      }
 
       const mode = walletMode === "none" ? undefined : (walletMode as "injected" | "generated");
       const exec = await scoreRun(
@@ -156,6 +179,7 @@ function ScoreRoom({ runId }: { runId: number }) {
         sampleContent,
         rubricContent,
         manifestContent,
+        runManifestContent,
         (hash) => {
           setScoreTxHash(hash);
           sessionStorage.setItem("benchseal_pending_tx_score_run", JSON.stringify({ txHash: hash, ts: Date.now() }));
@@ -196,8 +220,9 @@ function ScoreRoom({ runId }: { runId: number }) {
 
   const isSealed = run.status === RunStatus.SEALED;
   const canScore = account && isCorrectChain && run.status === RunStatus.RUN_COMMITTED;
-  const evidenceReady = sampleContent && rubricContent && manifestContent
-    && sampleDigestMatch !== false && rubricDigestMatch !== false && manifestDigestMatch !== false;
+  const evidenceReady = sampleContent && rubricContent && manifestContent && runManifestContent
+    && sampleDigestMatch !== false && rubricDigestMatch !== false
+    && manifestDigestMatch !== false && runManifestDigestMatch !== false;
 
   const statusClass =
     isSealed ? "tag-sealed" :
@@ -393,6 +418,22 @@ function ScoreRoom({ runId }: { runId: number }) {
                 </div>
               </div>
             )}
+
+            <div>
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Run Manifest URL</div>
+              <a
+                href={run.run_manifest_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--orange)", wordBreak: "break-all", textDecoration: "none" }}
+              >
+                {run.run_manifest_url}
+              </a>
+              <div className="digest" style={{ marginTop: 4, fontSize: 10 }}>{run.run_manifest_digest}</div>
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginTop: 4 }}>
+                Paste the run manifest content below — proves claimed provenance was committed before outputs were seen.
+              </div>
+            </div>
           </div>
         </div>
 
@@ -477,14 +518,41 @@ function ScoreRoom({ runId }: { runId: number }) {
                 </p>
               </div>
 
+              <div>
+                <label style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Run Manifest Content
+                  <span style={{ marginLeft: 6, color: "var(--ink-faint)" }}>(max {MAX_RUN_MANIFEST_SIZE} chars)</span>
+                </label>
+                <textarea
+                  className="field-input"
+                  rows={5}
+                  placeholder={'Paste the run manifest content, e.g. {"model":"GPT-4o","temperature":0,"hardware":"A100",...}'}
+                  value={runManifestContent}
+                  onChange={(e) => onRunManifestChange(e.target.value)}
+                  style={{ fontSize: 11 }}
+                />
+                {runManifestDigest && (
+                  <div style={{ marginTop: 4, fontSize: 10, fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all",
+                    color: runManifestDigestMatch === true ? "var(--green)" : runManifestDigestMatch === false ? "var(--red, #f56)" : "var(--ink-faint)" }}>
+                    {runManifestDigest}
+                    {runManifestDigestMatch === true && " ✓ matches stored"}
+                    {runManifestDigestMatch === false && " ✗ does not match stored digest"}
+                  </div>
+                )}
+                <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginTop: 6, marginBottom: 0 }}>
+                  The claimed provenance committed at submit time. Proves the run description (model config, inference params) was not changed after outputs were observed.
+                </p>
+              </div>
+
               <div style={{ borderTop: "1px solid rgba(201,195,232,.1)", paddingTop: 12 }}>
                 <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>
                   How Scoring Works
                 </div>
                 <ol style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", lineHeight: 1.9, margin: 0, paddingLeft: 16 }}>
-                  <li>Supply sample bundle, rubric, and task manifest content</li>
-                  <li>Contract verifies all three against their SHA-256 commitments</li>
+                  <li>Supply sample bundle, rubric, task manifest, and run manifest content</li>
+                  <li>Contract verifies all four against their SHA-256 commitments</li>
                   <li>Sample task IDs verified against manifest — provenance check</li>
+                  <li>Sampling policy min_samples enforced against actual sample count</li>
                   <li>Validators score each task-output pair independently (band 0–4)</li>
                   <li>Consensus requires agreement on dimension bands</li>
                   <li>Equal-weight average score sealed on-chain</li>

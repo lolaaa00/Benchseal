@@ -240,6 +240,7 @@ export async function scoreRun(
   sampleBundleContent: string,
   rubricContent: string,
   taskManifestContent: string,
+  runManifestContent: string,
   onTxHash?: (h: string) => void,
   onStatusChange?: (status: string) => void,
   walletMode?: "injected" | "generated",
@@ -247,7 +248,8 @@ export async function scoreRun(
   if (!sampleBundleContent) throw new Error("sample_bundle_content is required");
   if (!rubricContent) throw new Error("rubric_content is required");
   if (!taskManifestContent) throw new Error("task_manifest_content is required");
-  return writeContract("score_run", [runId, sampleBundleContent, rubricContent, taskManifestContent], onTxHash, onStatusChange, walletMode);
+  if (!runManifestContent) throw new Error("run_manifest_content is required");
+  return writeContract("score_run", [runId, sampleBundleContent, rubricContent, taskManifestContent, runManifestContent], onTxHash, onStatusChange, walletMode);
 }
 
 export async function sealLeaderboard(

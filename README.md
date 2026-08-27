@@ -12,15 +12,16 @@ Without consensus, certification is just notarisation — any chain can timestam
 
 ## Evidence binding
 
-Three pieces of content are committed on-chain before scoring can begin:
+Four pieces of content are committed on-chain before scoring can begin:
 
 | Content | Committed where | Verified how |
 |---|---|---|
 | Rubric | `create_benchmark` → `rubric_digest` | `sha256(rubric_content)` at score time |
 | Sample bundle | `commit_run` → `sample_bundle_digest` | `sha256(sample_bundle_content)` at score time |
+| Run manifest | `commit_run` → `run_manifest_digest` | `sha256(run_manifest_content)` at score time |
 | Task manifest | `publish_version` → `task_manifest_digest` | `sha256(task_manifest_content)` at score time |
 
-At `score_run` the caller supplies all three content strings. The contract recomputes all three digests and rejects any mismatch before any validator sees the content.
+At `score_run` the caller supplies all four content strings. The contract recomputes all four digests and rejects any mismatch before any validator sees the content.
 
 ## Run provenance
 
@@ -42,21 +43,39 @@ The task manifest (committed in `publish_version`) defines the canonical task in
 ]}
 ```
 
-At score time the contract verifies that every sample `task_id` exists in the manifest. A submitter cannot score outputs for tasks that were never in the benchmark, and validators see the canonical prompt alongside the model's response — not just the response alone.
+The run manifest (committed in `commit_run`) records the claimed provenance of the run:
+
+```json
+{
+  "model": "GPT-4o",
+  "inference_date": "2026-08-27",
+  "temperature": 0.0,
+  "hardware": "A100"
+}
+```
+
+At score time the contract verifies:
+1. Every sample `task_id` exists in the manifest — cannot score outputs for tasks not in the benchmark
+2. The run manifest content hashes to the committed `run_manifest_digest` — proves the claimed run description was not changed after outputs were observed
+3. The sampling policy's `min_samples` is satisfied by the actual sample count
+
+Validators see the canonical prompt, model response, and run provenance together — not just an opaque output blob.
 
 ## Architecture
 
 ```
 Browser (submitter)
-  sha256(sample_bundle)     → commit_run(sample_digest)
-  sha256(task_manifest)     → publish_version(manifest_digest)
   sha256(rubric)            → create_benchmark(rubric_digest)
+  sha256(task_manifest)     → publish_version(manifest_digest)
+  sha256(run_manifest)      → commit_run(run_manifest_digest)
+  sha256(sample_bundle)     → commit_run(sample_digest)
 
 Browser (scorer)
-  supply(sample_content, rubric_content, task_manifest_content)
-  → score_run verifies sha256 of all three against stored digests
+  supply(sample_content, rubric_content, task_manifest_content, run_manifest_content)
+  → score_run verifies sha256 of all four against stored digests
   → contract verifies every sample task_id exists in manifest
-  → GenLayer leader runs scoring prompt with task-output pairs
+  → contract enforces min_samples from sampling policy
+  → GenLayer leader runs scoring prompt with task-output pairs + run provenance
   → validators run same prompt independently
   → eq_principle checks band agreement
   → FINALIZED → run.status = SEALED
@@ -145,7 +164,7 @@ The script computes real SHA-256 digests from inline content and exercises every
 | `create_benchmark(name, rubric_url, rubric_digest, dimensions_json, policy_json)` | write | Register a benchmark. Returns `benchmark_id`. |
 | `publish_version(benchmark_id, url, digest, note)` | write | Publish a task manifest version. Returns `version`. Digest commits the canonical task inputs. |
 | `commit_run(benchmark_id, version, model_name, manifest_url, manifest_digest, metrics_json, sample_url, sample_digest)` | write | Commit a run. Returns `run_id`. |
-| `score_run(run_id, sample_bundle_content, rubric_content, task_manifest_content)` | write | Score via consensus. Verifies all three digests; validates sample task IDs against manifest. |
+| `score_run(run_id, sample_bundle_content, rubric_content, task_manifest_content, run_manifest_content)` | write | Score via consensus. Verifies all four digests; validates sample task IDs against manifest; enforces sampling policy min_samples. |
 | `seal_leaderboard(benchmark_id, version, ordered_run_ids_json)` | write | Publish a leaderboard snapshot. All SEALED runs must be included in descending score order. |
 | `invalidate_run(run_id, public_reason_url)` | write | Invalidate a run. Original score preserved in `original_*` fields. |
 | `get_benchmark(id)` | view | |
