@@ -9,31 +9,28 @@ export interface ExecutionResult {
   rawExecution?: unknown;
 }
 
-// Recursively search an object tree for a return value
-function findReturnValue(obj: Record<string, unknown>): unknown {
-  for (const key of ["return_value", "returnValue", "result"]) {
-    if (key in obj && obj[key] !== null && obj[key] !== undefined) {
-      return obj[key];
-    }
-  }
-  for (const val of Object.values(obj)) {
-    if (val && typeof val === "object" && !Array.isArray(val)) {
-      const found = findReturnValue(val as Record<string, unknown>);
-      if (found !== null && found !== undefined) return found;
+/**
+ * Extract a scalar return value from the execution envelope.
+ * Only looks at the direct leader_receipt / execution level to avoid
+ * mistakenly matching deeply-nested unrelated values.
+ */
+function extractReturnValue(execution: Record<string, unknown>): unknown {
+  for (const key of ["return_value", "returnValue"]) {
+    if (key in execution && execution[key] !== null && execution[key] !== undefined) {
+      return execution[key];
     }
   }
   return null;
 }
 
-// Recursively search for an execution status string
-function findExecStatus(obj: Record<string, unknown>): string | null {
-  for (const key of ["execution_result", "vm_status", "genvm_status"]) {
-    if (typeof obj[key] === "string") return (obj[key] as string).toUpperCase();
-  }
-  for (const val of Object.values(obj)) {
-    if (val && typeof val === "object" && !Array.isArray(val)) {
-      const found = findExecStatus(val as Record<string, unknown>);
-      if (found) return found;
+/**
+ * Identify the execution-level VM status string.
+ * Only checks the direct execution object — not the transaction wrapper.
+ */
+function execStatus(execution: Record<string, unknown>): string | null {
+  for (const key of ["execution_result", "vm_status", "genvm_status", "status"]) {
+    if (typeof execution[key] === "string") {
+      return (execution[key] as string).toUpperCase();
     }
   }
   return null;
@@ -45,7 +42,8 @@ export function parseLeaderResult(tx: unknown): ExecutionResult {
   }
 
   const t = tx as Record<string, unknown>;
-  // genlayer-js on StudioNet puts status as a number and string name in statusName
+
+  // genlayer-js on StudioNet: statusName is the string form of the tx status
   const txStatus = (
     (t.statusName as string | undefined) ??
     (typeof t.status === "string" ? t.status : undefined)
@@ -60,39 +58,45 @@ export function parseLeaderResult(tx: unknown): ExecutionResult {
     };
   }
 
-  // Try direct execution envelope first
-  const execution = t.execution ?? t.result ?? t.genvm_execution ?? t.leader_receipt;
+  // Look for the execution envelope at known locations only
+  const execution = (
+    t.execution ??
+    t.result ??
+    t.genvm_execution ??
+    t.leader_receipt
+  );
 
   if (execution && typeof execution === "object") {
     const ex = execution as Record<string, unknown>;
-    const vmStatus = (
-      (ex.status as string | undefined) ??
-      (ex.execution_result as string | undefined) ??
-      findExecStatus(ex) ?? ""
-    ).toUpperCase();
+    const vmStatus = execStatus(ex) ?? "";
 
     if (vmStatus === "SUCCESS" || vmStatus === "OK") {
       return {
         status: "SUCCESS",
-        returnValue: findReturnValue(ex),
+        returnValue: extractReturnValue(ex),
         rawExecution: tx,
       };
     }
     if (vmStatus === "ROLLBACK" || vmStatus === "ERROR") {
+      const msg =
+        (ex.error as string) ??
+        (ex.message as string) ??
+        "GenVM rollback";
       return {
         status: "ROLLBACK",
         returnValue: null,
-        errorMessage: (ex.error as string) ?? (ex.message as string) ?? "GenVM rollback",
+        errorMessage: msg,
         rawExecution: tx,
       };
     }
   }
 
-  // Fallback: if tx is FINALIZED, treat as SUCCESS and search entire tx tree
+  // Fallback: FINALIZED tx with no clear execution envelope — treat as SUCCESS
+  // but do NOT search the entire tx tree for return values (that risks false matches).
   if (txStatus === "FINALIZED") {
     return {
       status: "SUCCESS",
-      returnValue: findReturnValue(t),
+      returnValue: null,
       rawExecution: tx,
     };
   }
@@ -102,4 +106,20 @@ export function parseLeaderResult(tx: unknown): ExecutionResult {
     returnValue: null,
     rawExecution: tx,
   };
+}
+
+/**
+ * Parse an integer ID from a write transaction result.
+ * Returns null if the result does not contain a numeric ID.
+ */
+export function parseReturnedId(result: ExecutionResult): number | null {
+  const rv = result.returnValue;
+  if (typeof rv === "number" && Number.isInteger(rv) && rv >= 0) return rv;
+  if (typeof rv === "string") {
+    const n = parseInt(rv, 10);
+    if (!isNaN(n) && n >= 0) return n;
+  }
+  // BigInt from some JSON parsers
+  if (typeof rv === "bigint") return Number(rv);
+  return null;
 }

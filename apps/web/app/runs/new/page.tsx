@@ -2,12 +2,20 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { commitRun, listBenchmarks, getBenchmark, listRuns, BenchmarkInfo } from "@/lib/genlayer/contract";
+import {
+  commitRun,
+  listBenchmarks,
+  getBenchmark,
+  parseReturnedId,
+  BenchmarkInfo,
+} from "@/lib/genlayer/contract";
 import { useWallet } from "@/components/WalletProvider";
 import { ContractGuard } from "@/components/ContractGuard";
 import { TxStatus } from "@/components/TxStatus";
 import { Suspense } from "react";
 import { computeSHA256 } from "@/lib/crypto";
+
+const MAX_SAMPLE_SIZE = 8000; // must match contract constant
 
 const labelStyle: React.CSSProperties = {
   fontFamily: "Sora, sans-serif",
@@ -30,7 +38,7 @@ const hintStyle: React.CSSProperties = {
 function RunSubmitForm() {
   const searchParams = useSearchParams();
   const defaultBenchmark = searchParams.get("benchmark") ?? "";
-  const { account, isCorrectChain } = useWallet();
+  const { account, isCorrectChain, walletMode } = useWallet();
 
   const [benchmarks, setBenchmarks] = useState<BenchmarkInfo[]>([]);
   const [selectedBenchmark, setSelectedBenchmark] = useState<BenchmarkInfo | null>(null);
@@ -39,11 +47,13 @@ function RunSubmitForm() {
     version: "1",
     modelName: "",
     runManifestUrl: "",
-    runManifestDigest: "",
+    runManifestContent: "",
     sampleBundleUrl: "",
-    sampleBundleDigest: "",
+    sampleBundleContent: "",
     deterministicMetrics: JSON.stringify({ accuracy: 0.0, exact_match: 0.0 }, null, 2),
   });
+  const [runManifestDigest, setRunManifestDigest] = useState<string | null>(null);
+  const [sampleBundleDigest, setSampleBundleDigest] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txStatus, setTxStatus] = useState<string | null>(null);
@@ -62,7 +72,35 @@ function RunSubmitForm() {
     }
   }, [form.benchmarkId]);
 
-  const canSubmit = account && isCorrectChain && form.benchmarkId && form.modelName && form.runManifestUrl && form.sampleBundleUrl;
+  const sampleTooLarge = form.sampleBundleContent.length > MAX_SAMPLE_SIZE;
+  const canSubmit =
+    account &&
+    isCorrectChain &&
+    form.benchmarkId &&
+    form.modelName &&
+    form.runManifestUrl &&
+    form.runManifestContent &&
+    form.sampleBundleUrl &&
+    form.sampleBundleContent &&
+    !sampleTooLarge;
+
+  async function onRunManifestContentChange(content: string) {
+    setForm((f) => ({ ...f, runManifestContent: content }));
+    if (content.trim()) {
+      setRunManifestDigest(await computeSHA256(content));
+    } else {
+      setRunManifestDigest(null);
+    }
+  }
+
+  async function onSampleBundleContentChange(content: string) {
+    setForm((f) => ({ ...f, sampleBundleContent: content }));
+    if (content.trim()) {
+      setSampleBundleDigest(await computeSHA256(content));
+    } else {
+      setSampleBundleDigest(null);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -71,23 +109,37 @@ function RunSubmitForm() {
     setSubmitting(true);
 
     try {
+      if (!form.runManifestContent.trim()) {
+        throw new Error("Run manifest content is required to compute a genuine digest.");
+      }
+      if (!form.sampleBundleContent.trim()) {
+        throw new Error("Sample bundle content is required — validators need it to score the run.");
+      }
+      if (form.sampleBundleContent.length > MAX_SAMPLE_SIZE) {
+        throw new Error(`Sample bundle content exceeds the ${MAX_SAMPLE_SIZE}-character limit.`);
+      }
+
       JSON.parse(form.deterministicMetrics);
-      const runManifestDigest = form.runManifestDigest || await computeSHA256(form.runManifestUrl);
-      const sampleBundleDigest = form.sampleBundleDigest || await computeSHA256(form.sampleBundleUrl);
+
+      const computedRunManifestDigest = await computeSHA256(form.runManifestContent);
+      const computedSampleBundleDigest = await computeSHA256(form.sampleBundleContent);
+
+      const mode = walletMode === "none" ? undefined : (walletMode as "injected" | "generated");
       const exec = await commitRun(
         parseInt(form.benchmarkId, 10),
         parseInt(form.version, 10),
         form.modelName,
         form.runManifestUrl,
-        runManifestDigest,
+        computedRunManifestDigest,
         form.deterministicMetrics,
         form.sampleBundleUrl,
-        sampleBundleDigest,
+        computedSampleBundleDigest,
         (hash) => {
           setTxHash(hash);
           sessionStorage.setItem("benchseal_pending_tx_commit_run", JSON.stringify({ txHash: hash, ts: Date.now() }));
         },
         (status) => setTxStatus(status),
+        mode,
       );
 
       sessionStorage.removeItem("benchseal_pending_tx_commit_run");
@@ -95,12 +147,13 @@ function RunSubmitForm() {
         setError(exec.errorMessage ?? "Transaction rolled back");
         return;
       }
+
+      const runId = parseReturnedId(exec);
       const bid = parseInt(form.benchmarkId, 10);
-      const runs = await listRuns(bid, 0, 100);
-      const newest = runs.length > 0 ? runs[runs.length - 1] : null;
-      const runId = newest?.run_id ?? null;
       setResult(runId !== null ? `Run #${runId} committed` : "Run committed");
-      setTimeout(() => { window.location.href = runId !== null ? `/runs/${runId}` : `/benchmarks/${bid}`; }, 1000);
+      setTimeout(() => {
+        window.location.href = runId !== null ? `/runs/${runId}` : `/benchmarks/${bid}`;
+      }, 1000);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -215,14 +268,20 @@ function RunSubmitForm() {
           </div>
 
           <div>
-            <label style={labelStyle}>Run Manifest Digest</label>
-            <input
+            <label style={labelStyle}>Run Manifest Content <span style={{ color: "var(--orange)" }}>*</span></label>
+            <textarea
               className="field-input"
-              placeholder="sha256:..."
-              value={form.runManifestDigest}
-              onChange={(e) => setForm({ ...form, runManifestDigest: e.target.value })}
+              rows={5}
+              placeholder="Paste the run manifest JSON content. The SHA-256 digest is computed in-browser."
+              value={form.runManifestContent}
+              onChange={(e) => onRunManifestContentChange(e.target.value)}
+              required
             />
-            <p style={hintStyle}>SHA-256 of the manifest file. Leave blank to use a URL-based placeholder.</p>
+            {runManifestDigest && (
+              <p style={{ ...hintStyle, color: "var(--green)", wordBreak: "break-all" }}>
+                Digest: {runManifestDigest}
+              </p>
+            )}
           </div>
 
           <div>
@@ -238,13 +297,34 @@ function RunSubmitForm() {
           </div>
 
           <div>
-            <label style={labelStyle}>Sample Bundle Digest</label>
-            <input
+            <label style={labelStyle}>
+              Sample Bundle Content <span style={{ color: "var(--orange)" }}>*</span>
+              <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginLeft: 8, fontWeight: 400 }}>
+                (max {MAX_SAMPLE_SIZE} chars)
+              </span>
+            </label>
+            <textarea
               className="field-input"
-              placeholder="sha256:..."
-              value={form.sampleBundleDigest}
-              onChange={(e) => setForm({ ...form, sampleBundleDigest: e.target.value })}
+              rows={8}
+              placeholder="Paste the sample bundle content (model outputs). Validators will score exactly this text."
+              value={form.sampleBundleContent}
+              onChange={(e) => onSampleBundleContentChange(e.target.value)}
+              required
+              style={sampleTooLarge ? { borderColor: "var(--red, #f56)" } : undefined}
             />
+            {sampleTooLarge && (
+              <p style={{ ...hintStyle, color: "var(--red, #f56)" }}>
+                Content is {form.sampleBundleContent.length} characters — exceeds {MAX_SAMPLE_SIZE} limit.
+              </p>
+            )}
+            {sampleBundleDigest && !sampleTooLarge && (
+              <p style={{ ...hintStyle, color: "var(--green)", wordBreak: "break-all" }}>
+                Digest: {sampleBundleDigest}
+              </p>
+            )}
+            <p style={hintStyle}>
+              Validators score this exact content. The digest is verified on-chain against the stored commitment.
+            </p>
           </div>
 
           <div>
@@ -258,7 +338,7 @@ function RunSubmitForm() {
             <p style={hintStyle}>Deterministic metrics computed before submission (accuracy, exact_match, BLEU, etc.)</p>
           </div>
 
-          {result && <div className="success-banner" aria-live="polite">{result} - redirecting...</div>}
+          {result && <div className="success-banner" aria-live="polite">{result} — redirecting...</div>}
           <div aria-live="polite">
             <TxStatus txHash={txHash} status={txStatus} error={error} />
           </div>

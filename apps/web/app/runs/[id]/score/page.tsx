@@ -17,6 +17,10 @@ import {
 import { useWallet } from "@/components/WalletProvider";
 import { ContractGuard } from "@/components/ContractGuard";
 import { TxStatus } from "@/components/TxStatus";
+import { computeSHA256 } from "@/lib/crypto";
+
+const MAX_RUBRIC_SIZE = 4000;  // must match contract constant
+const MAX_SAMPLE_SIZE = 8000;  // must match contract constant
 
 function BandChip({ band }: { band: number }) {
   return <span className={`band-chip band-${band}`}>{band}</span>;
@@ -30,11 +34,20 @@ const panelStyle: React.CSSProperties = {
 };
 
 function ScoreRoom({ runId }: { runId: number }) {
-  const { account, isCorrectChain } = useWallet();
+  const { account, isCorrectChain, walletMode } = useWallet();
   const [run, setRun] = useState<RunInfo | null>(null);
   const [benchmark, setBenchmark] = useState<BenchmarkInfo | null>(null);
   const [exemplars, setExemplars] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
+
+  // Evidence inputs
+  const [sampleContent, setSampleContent] = useState("");
+  const [rubricContent, setRubricContent] = useState("");
+  const [sampleDigest, setSampleDigest] = useState<string | null>(null);
+  const [rubricDigest, setRubricDigest] = useState<string | null>(null);
+  const [sampleDigestMatch, setSampleDigestMatch] = useState<boolean | null>(null);
+  const [rubricDigestMatch, setRubricDigestMatch] = useState<boolean | null>(null);
+
   const [scoring, setScoring] = useState(false);
   const [scoreTxHash, setScoreTxHash] = useState<string | null>(null);
   const [scoreTxStatus, setScoreTxStatus] = useState<string | null>(null);
@@ -52,8 +65,7 @@ function ScoreRoom({ runId }: { runId: number }) {
         await Promise.all(
           dims.map(async (dim) => {
             try {
-              const res = await previewExemplars(r.run_id, dim, 4);
-              exs[dim] = res;
+              exs[dim] = await previewExemplars(r.run_id, dim, 4);
             } catch {
               exs[dim] = [];
             }
@@ -65,24 +77,70 @@ function ScoreRoom({ runId }: { runId: number }) {
       .finally(() => setLoading(false));
   }, [runId]);
 
+  async function onSampleChange(content: string) {
+    setSampleContent(content);
+    if (content && run) {
+      const digest = await computeSHA256(content);
+      setSampleDigest(digest);
+      setSampleDigestMatch(digest === run.sample_bundle_digest);
+    } else {
+      setSampleDigest(null);
+      setSampleDigestMatch(null);
+    }
+  }
+
+  async function onRubricChange(content: string) {
+    setRubricContent(content);
+    if (content && benchmark) {
+      const digest = await computeSHA256(content);
+      setRubricDigest(digest);
+      setRubricDigestMatch(digest === benchmark.rubric_digest);
+    } else {
+      setRubricDigest(null);
+      setRubricDigestMatch(null);
+    }
+  }
+
   async function handleScore() {
     setError(null);
     setScoreResult(null);
     setScoring(true);
     try {
-      const exec = await scoreRun(runId, "", "", (hash) => {
-        setScoreTxHash(hash);
-        sessionStorage.setItem("benchseal_pending_tx_score_run", JSON.stringify({ txHash: hash, ts: Date.now() }));
-      }, (status) => setScoreTxStatus(status));
+      if (!sampleContent) throw new Error("Sample bundle content is required.");
+      if (!rubricContent) throw new Error("Rubric content is required.");
+      if (sampleContent.length > MAX_SAMPLE_SIZE) {
+        throw new Error(`Sample content exceeds ${MAX_SAMPLE_SIZE}-character limit.`);
+      }
+      if (rubricContent.length > MAX_RUBRIC_SIZE) {
+        throw new Error(`Rubric content exceeds ${MAX_RUBRIC_SIZE}-character limit.`);
+      }
+      if (sampleDigestMatch === false) {
+        throw new Error("Sample content digest does not match the stored commitment. Provide the exact content.");
+      }
+      if (rubricDigestMatch === false) {
+        throw new Error("Rubric content digest does not match the stored commitment. Provide the exact rubric.");
+      }
+
+      const mode = walletMode === "none" ? undefined : (walletMode as "injected" | "generated");
+      const exec = await scoreRun(
+        runId,
+        sampleContent,
+        rubricContent,
+        (hash) => {
+          setScoreTxHash(hash);
+          sessionStorage.setItem("benchseal_pending_tx_score_run", JSON.stringify({ txHash: hash, ts: Date.now() }));
+        },
+        (status) => setScoreTxStatus(status),
+        mode,
+      );
       sessionStorage.removeItem("benchseal_pending_tx_score_run");
       if (exec.status === "SUCCESS") {
-        setScoreResult("Scoring complete - reloading...");
+        setScoreResult("Scoring complete — reloading...");
         const updated = await getRun(runId);
         setRun(updated);
         setTimeout(() => window.location.reload(), 1500);
       } else if (exec.status === "UNKNOWN") {
-        // Timed out waiting but tx may still finalize — reload to check
-        setScoreResult("Consensus in progress - reloading to check status...");
+        setScoreResult("Consensus in progress — reloading to check status...");
         setTimeout(() => window.location.reload(), 2000);
       } else {
         setError(exec.errorMessage ?? "Scoring failed or abstained");
@@ -108,6 +166,7 @@ function ScoreRoom({ runId }: { runId: number }) {
 
   const isSealed = run.status === RunStatus.SEALED;
   const canScore = account && isCorrectChain && run.status === RunStatus.RUN_COMMITTED;
+  const evidenceReady = sampleContent && rubricContent && sampleDigestMatch !== false && rubricDigestMatch !== false;
 
   const statusClass =
     isSealed ? "tag-sealed" :
@@ -116,14 +175,14 @@ function ScoreRoom({ runId }: { runId: number }) {
     run.status === RunStatus.ABSTAINED ? "tag-abstained" : "tag-invalid";
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 20, minHeight: "calc(100vh - 160px)" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 400px", gap: 20, minHeight: "calc(100vh - 160px)" }}>
       {/* Left: Score console */}
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         {/* Header */}
         <div style={{ ...panelStyle, padding: 28 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
             <span style={{ fontFamily: "Sora, sans-serif", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--ink-faint)" }}>
-              Score Room - Run #{runId}
+              Score Room — Run #{runId}
             </span>
             <span className={`tag ${statusClass}`}>{runStatusLabel(run.status as 0)}</span>
           </div>
@@ -131,7 +190,7 @@ function ScoreRoom({ runId }: { runId: number }) {
             {run.model_name}
           </div>
           <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--ink-faint)", marginTop: 4 }}>
-            Benchmark #{run.benchmark_id} - v{run.version}
+            Benchmark #{run.benchmark_id} — v{run.version}
           </div>
         </div>
 
@@ -139,7 +198,7 @@ function ScoreRoom({ runId }: { runId: number }) {
         {isSealed && (
           <div style={{ ...panelStyle, padding: 28, border: "1.5px solid rgba(61,220,138,.25)" }}>
             <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-              Final Score
+              Final Score (equal-weight average of dimension bands)
             </div>
             <div style={{ fontFamily: "Sora, sans-serif", fontSize: 48, fontWeight: 800, color: "var(--green)" }}>
               {scoreBpsToPercent(run.final_score_bps)}
@@ -189,7 +248,7 @@ function ScoreRoom({ runId }: { runId: number }) {
                     {dimExemplars.length > 0 && (
                       <div>
                         <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                          Exemplars ({dimExemplars.length})
+                          Historical Exemplars ({dimExemplars.length})
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                           {dimExemplars.map((ex, i) => (
@@ -227,7 +286,7 @@ function ScoreRoom({ runId }: { runId: number }) {
           </div>
         )}
 
-        {/* Actions */}
+        {/* Score action */}
         {!isSealed && (
           <div style={{ ...panelStyle, padding: 24 }}>
             {!account && <div className="error-banner" style={{ marginBottom: 14 }}>Connect wallet to trigger scoring</div>}
@@ -237,13 +296,13 @@ function ScoreRoom({ runId }: { runId: number }) {
             <button
               className="btn-p"
               onClick={handleScore}
-              disabled={!canScore || scoring}
+              disabled={!canScore || scoring || !evidenceReady}
               style={{ width: "100%" }}
             >
               {scoring
                 ? (scoreTxHash ? "Awaiting consensus..." : "Submitting...")
                 : run.status === RunStatus.RUN_COMMITTED
-                ? "Trigger Consensus Scoring"
+                ? (evidenceReady ? "Trigger Consensus Scoring" : "Provide evidence to score")
                 : "Run is " + runStatusLabel(run.status as 0)}
             </button>
 
@@ -260,51 +319,113 @@ function ScoreRoom({ runId }: { runId: number }) {
         )}
       </div>
 
-      {/* Right: Evidence */}
-      <div style={{ ...panelStyle }}>
-        <div className="section-head" style={{ borderRadius: "16px 16px 0 0" }}>Evidence</div>
-        <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
-          <div>
-            <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Sample Bundle</div>
-            <a
-              href={run.sample_bundle_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--orange)", wordBreak: "break-all", textDecoration: "none" }}
-            >
-              {run.sample_bundle_url}
-            </a>
-            <div className="digest" style={{ marginTop: 4, fontSize: 10 }}>{run.sample_bundle_digest}</div>
-          </div>
-
-          {benchmark && (
+      {/* Right: Evidence panel */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* Stored commitments */}
+        <div style={{ ...panelStyle }}>
+          <div className="section-head" style={{ borderRadius: "16px 16px 0 0" }}>Stored Commitments</div>
+          <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
             <div>
-              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Rubric</div>
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Sample Bundle URL</div>
               <a
-                href={benchmark.rubric_url}
+                href={run.sample_bundle_url}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--orange)", wordBreak: "break-all", textDecoration: "none" }}
               >
-                {benchmark.rubric_url}
+                {run.sample_bundle_url}
               </a>
+              <div className="digest" style={{ marginTop: 4, fontSize: 10 }}>{run.sample_bundle_digest}</div>
             </div>
-          )}
 
-          <div style={{ borderTop: "1px solid rgba(201,195,232,.1)", paddingTop: 16, marginTop: 4 }}>
-            <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-              How Scoring Works
-            </div>
-            <ol style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", lineHeight: 1.9, margin: 0, paddingLeft: 16 }}>
-              <li>Contract fetches rubric + sample bundle from public URLs</li>
-              <li>VecDB retrieves up to 4 historical exemplars per dimension</li>
-              <li>GenLayer validators independently judge each dimension (band 0-4)</li>
-              <li>Consensus requires validator agreement</li>
-              <li>Weighted score computed in basis points (0-10000)</li>
-              <li>Result written on-chain, immutable</li>
-            </ol>
+            {benchmark && (
+              <div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Rubric URL</div>
+                <a
+                  href={benchmark.rubric_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--orange)", wordBreak: "break-all", textDecoration: "none" }}
+                >
+                  {benchmark.rubric_url}
+                </a>
+                <div className="digest" style={{ marginTop: 4, fontSize: 10 }}>{benchmark.rubric_digest}</div>
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Evidence input — only shown when run is scoreable */}
+        {run.status === RunStatus.RUN_COMMITTED && (
+          <div style={{ ...panelStyle }}>
+            <div className="section-head" style={{ borderRadius: "16px 16px 0 0" }}>Provide Evidence to Score</div>
+            <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+              <p style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-dim)", margin: 0, lineHeight: 1.6 }}>
+                Paste the exact content from the URLs above. The contract verifies each piece against its stored SHA-256 commitment before validators judge it.
+              </p>
+
+              <div>
+                <label style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Sample Bundle Content
+                  <span style={{ marginLeft: 6, color: "var(--ink-faint)" }}>(max {MAX_SAMPLE_SIZE} chars)</span>
+                </label>
+                <textarea
+                  className="field-input"
+                  rows={6}
+                  placeholder="Paste the sample bundle content (model outputs)..."
+                  value={sampleContent}
+                  onChange={(e) => onSampleChange(e.target.value)}
+                  style={{ fontSize: 11 }}
+                />
+                {sampleDigest && (
+                  <div style={{ marginTop: 4, fontSize: 10, fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all",
+                    color: sampleDigestMatch === true ? "var(--green)" : sampleDigestMatch === false ? "var(--red, #f56)" : "var(--ink-faint)" }}>
+                    {sampleDigest}
+                    {sampleDigestMatch === true && " ✓ matches stored"}
+                    {sampleDigestMatch === false && " ✗ does not match stored digest"}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Rubric Content
+                  <span style={{ marginLeft: 6, color: "var(--ink-faint)" }}>(max {MAX_RUBRIC_SIZE} chars)</span>
+                </label>
+                <textarea
+                  className="field-input"
+                  rows={6}
+                  placeholder="Paste the rubric content (evaluation criteria)..."
+                  value={rubricContent}
+                  onChange={(e) => onRubricChange(e.target.value)}
+                  style={{ fontSize: 11 }}
+                />
+                {rubricDigest && (
+                  <div style={{ marginTop: 4, fontSize: 10, fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all",
+                    color: rubricDigestMatch === true ? "var(--green)" : rubricDigestMatch === false ? "var(--red, #f56)" : "var(--ink-faint)" }}>
+                    {rubricDigest}
+                    {rubricDigestMatch === true && " ✓ matches stored"}
+                    {rubricDigestMatch === false && " ✗ does not match stored digest"}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ borderTop: "1px solid rgba(201,195,232,.1)", paddingTop: 12 }}>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  How Scoring Works
+                </div>
+                <ol style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", lineHeight: 1.9, margin: 0, paddingLeft: 16 }}>
+                  <li>You supply the exact sample bundle and rubric content</li>
+                  <li>Contract verifies both against their stored SHA-256 commitments</li>
+                  <li>GenLayer validators independently judge each dimension (band 0–4)</li>
+                  <li>Consensus requires validator agreement on dimension bands</li>
+                  <li>Equal-weight average score computed in basis points (0–10000)</li>
+                  <li>Result written on-chain, sealed</li>
+                </ol>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -316,10 +437,10 @@ export default function ScorePage() {
 
   return (
     <ContractGuard>
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 24px 40px" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 24px 40px" }}>
         <div style={{ marginBottom: 24 }}>
           <Link href={`/runs/${runId}`} style={{ color: "var(--ink-faint)", fontSize: 13, textDecoration: "none", fontFamily: "JetBrains Mono, monospace" }}>
-            - Run #{runId}
+            ← Run #{runId}
           </Link>
           <h1 style={{ fontFamily: "Sora, sans-serif", fontSize: 24, fontWeight: 800, margin: "6px 0 0", color: "var(--ink)" }}>
             Scoring Room

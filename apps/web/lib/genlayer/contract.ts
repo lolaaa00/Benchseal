@@ -3,7 +3,8 @@
 import { getReadClient } from "./read-client";
 import { createWriteClient } from "./client";
 import { requireContractAddress } from "./data-source";
-import { parseLeaderResult, ExecutionResult } from "./execution";
+import { parseLeaderResult, parseReturnedId, ExecutionResult } from "./execution";
+export { parseReturnedId } from "./execution";
 import { POLL_INTERVAL_MS, POLL_MAX_RETRIES } from "./config";
 
 // ---------------------------------------------------------------------------
@@ -135,8 +136,9 @@ export async function writeContract(
   args: unknown[],
   onTxHash?: (hash: string) => void,
   onStatusChange?: (status: string) => void,
+  walletMode?: "injected" | "generated",
 ): Promise<ExecutionResult> {
-  const client = await createWriteClient();
+  const client = await createWriteClient(walletMode);
   const address = requireContractAddress() as `0x${string}`;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -200,8 +202,9 @@ export async function createBenchmark(
   samplingPolicyJson: string,
   onTxHash?: (h: string) => void,
   onStatusChange?: (status: string) => void,
+  walletMode?: "injected" | "generated",
 ): Promise<ExecutionResult> {
-  return writeContract("create_benchmark", [name, rubricUrl, rubricDigest, dimensionsJson, samplingPolicyJson], onTxHash, onStatusChange);
+  return writeContract("create_benchmark", [name, rubricUrl, rubricDigest, dimensionsJson, samplingPolicyJson], onTxHash, onStatusChange, walletMode);
 }
 
 export async function publishVersion(
@@ -211,8 +214,9 @@ export async function publishVersion(
   versionNote: string,
   onTxHash?: (h: string) => void,
   onStatusChange?: (status: string) => void,
+  walletMode?: "injected" | "generated",
 ): Promise<ExecutionResult> {
-  return writeContract("publish_version", [benchmarkId, taskManifestUrl, taskManifestDigest, versionNote], onTxHash, onStatusChange);
+  return writeContract("publish_version", [benchmarkId, taskManifestUrl, taskManifestDigest, versionNote], onTxHash, onStatusChange, walletMode);
 }
 
 export async function commitRun(
@@ -226,18 +230,22 @@ export async function commitRun(
   sampleBundleDigest: string,
   onTxHash?: (h: string) => void,
   onStatusChange?: (status: string) => void,
+  walletMode?: "injected" | "generated",
 ): Promise<ExecutionResult> {
-  return writeContract("commit_run", [benchmarkId, version, modelName, runManifestUrl, runManifestDigest, deterministicMetricsJson, sampleBundleUrl, sampleBundleDigest], onTxHash, onStatusChange);
+  return writeContract("commit_run", [benchmarkId, version, modelName, runManifestUrl, runManifestDigest, deterministicMetricsJson, sampleBundleUrl, sampleBundleDigest], onTxHash, onStatusChange, walletMode);
 }
 
 export async function scoreRun(
   runId: number,
-  sampleBundleContent = "",
-  rubricContent = "",
+  sampleBundleContent: string,
+  rubricContent: string,
   onTxHash?: (h: string) => void,
   onStatusChange?: (status: string) => void,
+  walletMode?: "injected" | "generated",
 ): Promise<ExecutionResult> {
-  return writeContract("score_run", [runId, sampleBundleContent, rubricContent], onTxHash, onStatusChange);
+  if (!sampleBundleContent) throw new Error("sample_bundle_content is required");
+  if (!rubricContent) throw new Error("rubric_content is required");
+  return writeContract("score_run", [runId, sampleBundleContent, rubricContent], onTxHash, onStatusChange, walletMode);
 }
 
 export async function sealLeaderboard(
@@ -246,8 +254,9 @@ export async function sealLeaderboard(
   orderedRunIdsJson: string,
   onTxHash?: (h: string) => void,
   onStatusChange?: (status: string) => void,
+  walletMode?: "injected" | "generated",
 ): Promise<ExecutionResult> {
-  return writeContract("seal_leaderboard", [benchmarkId, version, orderedRunIdsJson], onTxHash, onStatusChange);
+  return writeContract("seal_leaderboard", [benchmarkId, version, orderedRunIdsJson], onTxHash, onStatusChange, walletMode);
 }
 
 export async function invalidateRun(
@@ -255,8 +264,24 @@ export async function invalidateRun(
   publicReasonUrl: string,
   onTxHash?: (h: string) => void,
   onStatusChange?: (status: string) => void,
+  walletMode?: "injected" | "generated",
 ): Promise<ExecutionResult> {
-  return writeContract("invalidate_run", [runId, publicReasonUrl], onTxHash, onStatusChange);
+  return writeContract("invalidate_run", [runId, publicReasonUrl], onTxHash, onStatusChange, walletMode);
+}
+
+export async function getBenchmarkVersion(
+  benchmarkId: number,
+  version: number,
+): Promise<{benchmark_id: number; version: number; task_manifest_url: string; task_manifest_digest: string; version_note: string; created_by: string}> {
+  return callView("get_benchmark_version", [benchmarkId, version]);
+}
+
+export async function listBenchmarkVersions(
+  benchmarkId: number,
+  offset = 0,
+  limit = 50,
+): Promise<{benchmark_id: number; version: number; task_manifest_url: string; task_manifest_digest: string; version_note: string; created_by: string}[]> {
+  return callView("list_benchmark_versions", [benchmarkId, offset, limit]);
 }
 
 export function runStatusLabel(status: RunStatusValue): string {

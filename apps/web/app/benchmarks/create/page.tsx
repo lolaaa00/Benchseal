@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { createBenchmark, listBenchmarks } from "@/lib/genlayer/contract";
+import { createBenchmark, parseReturnedId } from "@/lib/genlayer/contract";
 import { useWallet } from "@/components/WalletProvider";
 import { TxStatus } from "@/components/TxStatus";
+import { computeSHA256 } from "@/lib/crypto";
 
 const labelStyle: React.CSSProperties = {
   fontFamily: "Sora, sans-serif",
@@ -24,22 +25,34 @@ const hintStyle: React.CSSProperties = {
 };
 
 export default function CreateBenchmarkPage() {
-  const { account, isCorrectChain } = useWallet();
+  const { account, isCorrectChain, walletMode } = useWallet();
 
   const [form, setForm] = useState({
     name: "",
     rubricUrl: "",
-    rubricDigest: "",
+    rubricContent: "",
     dimensionsRaw: "factual_grounding, instruction_adherence, usefulness",
     samplingPolicy: JSON.stringify({ sample_rate: 0.1, min_samples: 10 }, null, 2),
   });
+  const [computedDigest, setComputedDigest] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
 
-  const canSubmit = account && isCorrectChain && form.name && form.rubricUrl && form.rubricDigest;
+  const canSubmit =
+    account && isCorrectChain && form.name && form.rubricUrl && form.rubricContent;
+
+  async function onRubricContentChange(content: string) {
+    setForm((f) => ({ ...f, rubricContent: content }));
+    if (content.trim()) {
+      const digest = await computeSHA256(content);
+      setComputedDigest(digest);
+    } else {
+      setComputedDigest(null);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -48,6 +61,9 @@ export default function CreateBenchmarkPage() {
     setSubmitting(true);
 
     try {
+      if (!form.rubricContent.trim()) {
+        throw new Error("Rubric content is required. Paste the rubric text to commit its digest.");
+      }
       const dims = form.dimensionsRaw
         .split(",")
         .map((d) => d.trim())
@@ -55,12 +71,16 @@ export default function CreateBenchmarkPage() {
       if (dims.length === 0) throw new Error("At least one dimension is required");
 
       const policy = form.samplingPolicy;
-      JSON.parse(policy); // validate
+      JSON.parse(policy); // validate JSON
 
+      // Compute real digest from actual rubric content
+      const rubricDigest = await computeSHA256(form.rubricContent);
+
+      const mode = walletMode === "none" ? undefined : (walletMode as "injected" | "generated");
       const exec = await createBenchmark(
         form.name,
         form.rubricUrl,
-        form.rubricDigest,
+        rubricDigest,
         JSON.stringify(dims),
         policy,
         (hash) => {
@@ -68,6 +88,7 @@ export default function CreateBenchmarkPage() {
           sessionStorage.setItem("benchseal_pending_tx_create_benchmark", JSON.stringify({ txHash: hash, ts: Date.now() }));
         },
         (status) => setTxStatus(status),
+        mode,
       );
 
       sessionStorage.removeItem("benchseal_pending_tx_create_benchmark");
@@ -75,11 +96,12 @@ export default function CreateBenchmarkPage() {
         setError(exec.errorMessage ?? "Transaction rolled back");
         return;
       }
-      const all = await listBenchmarks(0, 100);
-      const newest = all.length > 0 ? all[all.length - 1] : null;
-      const benchmarkId = newest?.benchmark_id ?? null;
+
+      const benchmarkId = parseReturnedId(exec);
       setResult(benchmarkId !== null ? `Benchmark #${benchmarkId} created` : "Benchmark created");
-      setTimeout(() => { window.location.href = benchmarkId !== null ? `/benchmarks/${benchmarkId}` : "/"; }, 1500);
+      setTimeout(() => {
+        window.location.href = benchmarkId !== null ? `/benchmarks/${benchmarkId}` : "/";
+      }, 1500);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -117,10 +139,7 @@ export default function CreateBenchmarkPage() {
         </div>
       )}
 
-      <div
-        className="glass"
-        style={{ padding: 32 }}
-      >
+      <div className="glass" style={{ padding: 32 }}>
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 24 }}>
           <div>
             <label style={labelStyle}>Benchmark Name</label>
@@ -146,15 +165,23 @@ export default function CreateBenchmarkPage() {
           </div>
 
           <div>
-            <label style={labelStyle}>Rubric Digest</label>
-            <input
+            <label style={labelStyle}>Rubric Content <span style={{ color: "var(--orange)" }}>*</span></label>
+            <textarea
               className="field-input"
-              placeholder="sha256:abc123..."
-              value={form.rubricDigest}
-              onChange={(e) => setForm({ ...form, rubricDigest: e.target.value })}
+              rows={10}
+              placeholder="Paste the full rubric text here. The SHA-256 digest is computed in-browser and committed on-chain. Validators will judge runs against exactly this content."
+              value={form.rubricContent}
+              onChange={(e) => onRubricContentChange(e.target.value)}
               required
             />
-            <p style={hintStyle}>SHA-256 digest of the rubric file for integrity verification</p>
+            {computedDigest && (
+              <p style={{ ...hintStyle, color: "var(--green)", fontFamily: "JetBrains Mono, monospace", fontSize: 10, wordBreak: "break-all" }}>
+                Digest: {computedDigest}
+              </p>
+            )}
+            <p style={hintStyle}>
+              The digest of this exact content will be stored on-chain. When scoring a run, you must supply this same rubric text.
+            </p>
           </div>
 
           <div>
@@ -166,7 +193,7 @@ export default function CreateBenchmarkPage() {
               onChange={(e) => setForm({ ...form, dimensionsRaw: e.target.value })}
               required
             />
-            <p style={hintStyle}>Semantic dimensions validators will score (1-32, underscore_separated)</p>
+            <p style={hintStyle}>Semantic dimensions validators will score (1–32, underscore_separated)</p>
           </div>
 
           <div>
@@ -179,7 +206,7 @@ export default function CreateBenchmarkPage() {
             />
           </div>
 
-          {result && <div className="success-banner" aria-live="polite">{result} - redirecting...</div>}
+          {result && <div className="success-banner" aria-live="polite">{result} — redirecting...</div>}
           <div aria-live="polite">
             <TxStatus txHash={txHash} status={txStatus} error={error} />
           </div>

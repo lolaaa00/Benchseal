@@ -14,6 +14,7 @@ import {
   runStatusLabel,
   scoreBpsToPercent,
   RunStatus,
+  parseReturnedId,
 } from "@/lib/genlayer/contract";
 import { ContractGuard } from "@/components/ContractGuard";
 import { useWallet } from "@/components/WalletProvider";
@@ -42,7 +43,7 @@ const panelStyle: React.CSSProperties = {
 };
 
 function BenchmarkDetail({ id }: { id: number }) {
-  const { account, isCorrectChain } = useWallet();
+  const { account, isCorrectChain, walletMode } = useWallet();
   const [benchmark, setBenchmark] = useState<BenchmarkInfo | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([]);
@@ -60,8 +61,22 @@ function BenchmarkDetail({ id }: { id: number }) {
     setPublishError(null);
     setPublishing(true);
     try {
-      const exec = await publishVersion(id, publishForm.url, publishForm.digest || "sha256:none", publishForm.note || "new version", (hash) => setPublishTxHash(hash), (status) => setPublishTxStatus(status));
+      if (!publishForm.digest || !publishForm.digest.match(/^sha256:[0-9a-f]{64}$/)) {
+        throw new Error("A valid SHA-256 digest (sha256:<64 hex chars>) is required for the task manifest.");
+      }
+      const mode = walletMode === "none" ? undefined : (walletMode as "injected" | "generated");
+      const exec = await publishVersion(
+        id,
+        publishForm.url,
+        publishForm.digest,
+        publishForm.note || "new version",
+        (hash) => setPublishTxHash(hash),
+        (status) => setPublishTxStatus(status),
+        mode,
+      );
       if (exec.status === "ROLLBACK") throw new Error(exec.errorMessage ?? "Transaction rolled back");
+      const newVersion = parseReturnedId(exec);
+      void newVersion; // version number; page reload will reflect it
       window.location.reload();
     } catch (err: unknown) {
       setPublishError(err instanceof Error ? err.message : String(err));
@@ -181,10 +196,11 @@ function BenchmarkDetail({ id }: { id: number }) {
               />
               <input
                 className="field-input"
-                placeholder="Digest (sha256:... or leave blank)"
+                placeholder="sha256:<64 hex chars> (required)"
                 value={publishForm.digest}
                 onChange={(e) => setPublishForm({ ...publishForm, digest: e.target.value })}
                 style={{ fontSize: 12 }}
+                required
               />
               <input
                 className="field-input"
