@@ -11,7 +11,7 @@
  * All digests are computed from inline content strings — no URL fetching.
  */
 
-import { createClient } from "genlayer-js";
+import { createClient, createAccount } from "genlayer-js";
 import { createHash } from "crypto";
 
 const CONTRACT_ADDRESS = process.argv[2];
@@ -73,10 +73,10 @@ console.log(`Manifest digest: ${MANIFEST_DIGEST}`);
 console.log(`Sample digest  : ${SAMPLE_DIGEST}`);
 console.log("");
 
+const account = createAccount(PRIVATE_KEY);
 const client = createClient({
   endpoint: ENDPOINT,
-  chainId: CHAIN_ID,
-  privateKey: PRIVATE_KEY,
+  account,
 });
 
 function parseId(tx) {
