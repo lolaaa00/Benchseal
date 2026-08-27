@@ -1,6 +1,6 @@
 # BenchSeal
 
-BenchSeal is a GenLayer application that lets AI researchers publish tamper-proof model benchmark results on-chain. A model lab submits their run with content they hash locally; GenLayer validators independently score the exact same content; consensus seals the result — no single party controls the outcome.
+BenchSeal is a GenLayer application that lets AI researchers publish tamper-proof model benchmark results on-chain. A lab submits their run with content they hash locally; GenLayer validators independently score structured task-output pairs against the committed rubric; consensus seals the result — no single party controls the outcome.
 
 ## The problem
 
@@ -8,27 +8,55 @@ Model evaluation is self-reported. Labs run their own benchmarks, submit their o
 
 ## Why GenLayer
 
-Without consensus, certification is just notarisation — any chain can timestamp a score, but none can verify it. GenLayer validators each independently run the scoring prompt against the submitted sample bundle and must agree on the dimension bands before the transaction finalises. The equivalence principle is `prompt_comparative`: validators must match on the integer band values (0–4) for each named dimension. This is not possible with a deterministic smart contract.
+Without consensus, certification is just notarisation — any chain can timestamp a score, but none can verify it. GenLayer validators each independently run the scoring prompt and must agree on the dimension bands before the transaction finalises. The equivalence principle is `prompt_comparative`: validators must match on the integer band values (0–4) for each named dimension. This is not possible with a deterministic smart contract.
 
 ## Evidence binding
 
-Evidence is bound at commit time, not scoring time:
+Three pieces of content are committed on-chain before scoring can begin:
 
-1. **Commit phase** — the submitter computes `sha256(rubric_content)` and `sha256(sample_bundle_content)` in-browser, and commits those digests on-chain with `commit_run`.
-2. **Score phase** — the scorer must supply the exact original content. The contract recomputes both digests and rejects any mismatch before any validator ever sees the content.
+| Content | Committed where | Verified how |
+|---|---|---|
+| Rubric | `create_benchmark` → `rubric_digest` | `sha256(rubric_content)` at score time |
+| Sample bundle | `commit_run` → `sample_bundle_digest` | `sha256(sample_bundle_content)` at score time |
+| Task manifest | `publish_version` → `task_manifest_digest` | `sha256(task_manifest_content)` at score time |
 
-This means a malicious scorer cannot substitute a different rubric or sample bundle. The content judged by validators is provably the content committed at submission time.
+At `score_run` the caller supplies all three content strings. The contract recomputes all three digests and rejects any mismatch before any validator sees the content.
+
+## Run provenance
+
+The sample bundle is not an opaque output blob. It must be a JSON array of task-output pairs:
+
+```json
+[
+  { "task_id": "t1", "input": "What is 12 * 8?", "output": "96" },
+  { "task_id": "t2", "input": "Solve x^2 = 16",  "output": "x = ±4" }
+]
+```
+
+The task manifest (committed in `publish_version`) defines the canonical task inputs:
+
+```json
+{ "tasks": [
+  { "task_id": "t1", "prompt": "What is 12 * 8?" },
+  { "task_id": "t2", "prompt": "Solve x^2 = 16" }
+]}
+```
+
+At score time the contract verifies that every sample `task_id` exists in the manifest. A submitter cannot score outputs for tasks that were never in the benchmark, and validators see the canonical prompt alongside the model's response — not just the response alone.
 
 ## Architecture
 
 ```
 Browser (submitter)
-  sha256(sample) → commit_run(digest)       ← digest stored on-chain
+  sha256(sample_bundle)     → commit_run(sample_digest)
+  sha256(task_manifest)     → publish_version(manifest_digest)
+  sha256(rubric)            → create_benchmark(rubric_digest)
 
 Browser (scorer)
-  supply(sample_content, rubric_content)
-  → score_run verifies sha256(content) == stored_digest
-  → GenLayer leader runs scoring prompt
+  supply(sample_content, rubric_content, task_manifest_content)
+  → score_run verifies sha256 of all three against stored digests
+  → contract verifies every sample task_id exists in manifest
+  → GenLayer leader runs scoring prompt with task-output pairs
   → validators run same prompt independently
   → eq_principle checks band agreement
   → FINALIZED → run.status = SEALED
@@ -36,18 +64,18 @@ Browser (scorer)
 
 ## Scoring
 
-Scores are an equal-weight average across dimensions:
+Equal-weight average across dimensions:
 
 ```
 score_bps = round(sum(bands) / (4 * N) * 10000)
 ```
 
-where `N` is the number of dimensions and each band is an integer 0–4. Scores are stored as basis points (0–10000). Invalid bands (bool, float, string, negative, out-of-range, missing dimension, extra dimension) cause the transaction to ABSTAIN rather than write a wrong score.
+`N` is the number of dimensions; each band is 0–4. Scores are stored as basis points (0–10000). Invalid bands (bool, float, string, negative, out-of-range, missing, extra) cause the transaction to ABSTAIN rather than write a wrong score.
 
 ## Two-wallet model
 
 - **Browser wallet (MetaMask / injected)**: standard EIP-1193 connection. Chain must be StudioNet (61999).
-- **Generated wallet**: a private key is generated in-browser with `generatePrivateKey()` from genlayer-js and stored in `localStorage` under `benchseal_wallet_v1`. No extension required. Export the key before clearing browser storage. The wallet selector explicitly uses the generated key — it does not fall through to MetaMask.
+- **Generated wallet**: private key generated in-browser, stored in `localStorage` under `benchseal_wallet_v1`. No extension required. Export the key before clearing browser storage. Explicitly uses the generated key — does not fall through to MetaMask.
 
 ## Deployed contract
 
@@ -61,14 +89,15 @@ where `N` is the number of dimensions and each band is an integer 0–4. Scores 
 
 - **No URL fetching by the contract.** Content must be pasted into the UI. URLs are stored as metadata pointers only.
 - **Consensus is non-deterministic.** `score_run` can return UNDETERMINED if validators disagree. The caller retries.
-- **Sample bundle max 8 000 chars, rubric max 4 000 chars.** Content exceeding these limits is rejected before scoring.
-- **Score is final once SEALED.** The only way to change a sealed result is `invalidate_run`, which preserves the original score in `original_score_bps` and sets status to INVALIDATED.
-- **No on-chain storage of content.** The contract stores only digests. If the original content is lost, the score cannot be re-verified off-chain (but the on-chain seal is permanent).
+- **Size limits.** Sample bundle max 8 000 chars, rubric max 4 000 chars, task manifest max 8 000 chars. Rejected before scoring.
+- **Score is final once SEALED.** Use `invalidate_run` to retract — original score preserved in `original_score_bps`.
+- **Model identity is not verifiable on-chain.** The contract cannot prove outputs came from the claimed model without trusted hardware attestation (TEE). The task-output pair structure makes coverage auditable, but not model identity.
+- **No on-chain storage of content.** Only digests are stored. If original content is lost the score cannot be re-verified off-chain, but the on-chain seal is permanent.
 
 ## Setup
 
 ```bash
-# Prerequisites: Node 20+, Python 3.12 (for tests)
+# Prerequisites: Node 20+, Python 3.12 (for contract tests)
 
 # 1. Install dependencies
 npm ci
@@ -87,7 +116,7 @@ cd apps/web && npm run dev
 ## Tests
 
 ```bash
-# Contract tests (Python 3.12 required)
+# Contract tests (Python 3.12 required — 84 tests)
 python3.12 -m pytest tests/direct/test_benchseal.py -q
 
 # TypeScript typecheck
@@ -107,23 +136,23 @@ GENLAYER_PRIVATE_KEY=0x<your_key> \
   0xB20Ec470ca31bB75f115Ea178d962994393a33E8
 ```
 
-The script computes real SHA-256 digests from inline content strings and exercises every write method. `score_run` triggers consensus and may take a few minutes.
+The script computes real SHA-256 digests from inline content and exercises every write method including `score_run` with structured task-output pairs.
 
 ## Contract API
 
 | Method | Type | Description |
 |---|---|---|
-| `create_benchmark(name, rubric_url, rubric_digest, dimensions_json, policy_json)` | write | Register a new benchmark. Returns `benchmark_id`. |
-| `publish_version(benchmark_id, url, digest, note)` | write | Publish a new task manifest version. Returns `version`. |
+| `create_benchmark(name, rubric_url, rubric_digest, dimensions_json, policy_json)` | write | Register a benchmark. Returns `benchmark_id`. |
+| `publish_version(benchmark_id, url, digest, note)` | write | Publish a task manifest version. Returns `version`. Digest commits the canonical task inputs. |
 | `commit_run(benchmark_id, version, model_name, manifest_url, manifest_digest, metrics_json, sample_url, sample_digest)` | write | Commit a run. Returns `run_id`. |
-| `score_run(run_id, sample_bundle_content, rubric_content)` | write | Score via consensus. Verifies both digests before judging. |
+| `score_run(run_id, sample_bundle_content, rubric_content, task_manifest_content)` | write | Score via consensus. Verifies all three digests; validates sample task IDs against manifest. |
 | `seal_leaderboard(benchmark_id, version, ordered_run_ids_json)` | write | Publish a leaderboard snapshot. All SEALED runs must be included in descending score order. |
-| `invalidate_run(run_id, public_reason_url)` | write | Invalidate a sealed run. Original score preserved in `original_*` fields. |
+| `invalidate_run(run_id, public_reason_url)` | write | Invalidate a run. Original score preserved in `original_*` fields. |
 | `get_benchmark(id)` | view | |
 | `get_run(id)` | view | |
+| `get_benchmark_version(benchmark_id, version)` | view | Returns the immutable version record including task manifest digest. |
+| `list_benchmark_versions(benchmark_id, offset, limit)` | view | |
 | `list_benchmarks(offset, limit)` | view | |
 | `list_runs(benchmark_id, offset, limit)` | view | |
 | `get_snapshot(id)` | view | |
-| `get_benchmark_version(benchmark_id, version)` | view | |
-| `list_benchmark_versions(benchmark_id, offset, limit)` | view | |
 | `preview_exemplars(run_id, dimension, k)` | view | Sample exemplar outputs for a dimension. |
