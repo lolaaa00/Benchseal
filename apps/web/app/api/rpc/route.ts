@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 const GENLAYER_ENDPOINT = process.env.NEXT_PUBLIC_GENLAYER_ENDPOINT ?? "https://studio.genlayer.com/api";
 
 const ALLOWED_METHODS = new Set([
+  // Standard Ethereum RPC
   "eth_sendRawTransaction",
   "eth_getTransactionByHash",
   "eth_call",
@@ -13,6 +14,10 @@ const ALLOWED_METHODS = new Set([
   "eth_blockNumber",
   "eth_getTransactionCount",
   "net_version",
+  // GenLayer-specific
+  "gen_call",
+  "gen_getContractSchema",
+  "gen_getTransactionByHash",
 ]);
 
 export async function POST(req: NextRequest) {
