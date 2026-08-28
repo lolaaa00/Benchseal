@@ -100,7 +100,7 @@ score_bps = round(sum(bands) / (4 * N) * 10000)
 
 | Field | Value |
 |---|---|
-| Address | `0xB20Ec470ca31bB75f115Ea178d962994393a33E8` |
+| Address | `0x3802e88e48471622d7745884982dB30d27592190` |
 | Chain | StudioNet (chain ID 61999) |
 | Explorer | https://studio.genlayer.com/transactions |
 
@@ -125,7 +125,7 @@ npm ci
 cp apps/web/.env.example apps/web/.env.local
 # Edit apps/web/.env.local:
 #   NEXT_PUBLIC_GENLAYER_ENDPOINT=https://studio.genlayer.com/api
-#   NEXT_PUBLIC_BENCHSEAL_CONTRACT=0xB20Ec470ca31bB75f115Ea178d962994393a33E8
+#   NEXT_PUBLIC_BENCHSEAL_CONTRACT=0x3802e88e48471622d7745884982dB30d27592190
 #   NEXT_PUBLIC_BENCHSEAL_DATA=live
 
 # 3. Run the frontend
@@ -152,7 +152,7 @@ Runs the full lifecycle (create → publish → commit → score → leaderboard
 ```bash
 GENLAYER_PRIVATE_KEY=0x<your_key> \
   node scripts/exercise-studionet.mjs \
-  0xB20Ec470ca31bB75f115Ea178d962994393a33E8
+  0x3802e88e48471622d7745884982dB30d27592190
 ```
 
 The script computes real SHA-256 digests from inline content and exercises every write method including `score_run` with structured task-output pairs.
