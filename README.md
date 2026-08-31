@@ -50,15 +50,22 @@ The run manifest (committed in `commit_run`) records the claimed provenance of t
   "model": "GPT-4o",
   "inference_date": "2026-08-27",
   "temperature": 0.0,
-  "hardware": "A100"
+  "hardware": "A100",
+  "attestation_url": "https://example.com/inference-attestation.json",
+  "attestation_digest": "sha256:<hex>"
 }
 ```
 
+`attestation_url` and `attestation_digest` are optional but if either is present both are required. The attestation document — a signed inference log, TLS notary proof, or trusted executor certificate — is referenced by its digest, which is committed on-chain as part of the run manifest. Validators see the attestation reference during scoring and can independently verify it at the supplied URL. This provides the authenticated execution path: the on-chain commitment proves the attestation reference was not changed after outputs were observed.
+
 At score time the contract verifies:
 1. Every sample `task_id` exists in the manifest — cannot score outputs for tasks not in the benchmark
-2. All sample `task_id` values are unique — repeated copies of one task cannot satisfy the sampling threshold
+2. All sample `task_id` values are unique — repeated copies of one task cannot satisfy either threshold
 3. The run manifest content hashes to the committed `run_manifest_digest` — proves the claimed run description was not changed after outputs were observed
 4. The sampling policy's `min_samples` is satisfied by the actual count of distinct tasks
+5. The sampling policy's `sample_rate` × manifest size is also satisfied — coverage scales with the benchmark, so a submitter cannot commit a large manifest and cherry-pick a small easy subset
+
+If the run manifest declares an `attestation_url`, `attestation_digest` must also be present and must be a valid SHA-256 digest. The attestation reference is committed on-chain before scoring; validators see it during scoring and can independently verify the attestation document.
 
 Validators see the canonical prompt, model response, and run provenance together — not just an opaque output blob.
 
@@ -111,7 +118,7 @@ score_bps = round(sum(bands) / (4 * N) * 10000)
 - **Consensus is non-deterministic.** `score_run` can return UNDETERMINED if validators disagree. The caller retries.
 - **Size limits.** Sample bundle max 8 000 chars, rubric max 4 000 chars, task manifest max 8 000 chars. Rejected before scoring.
 - **Score is final once SEALED.** Use `invalidate_run` to retract — original score preserved in `original_score_bps`.
-- **Model identity is not verifiable on-chain.** The contract cannot prove outputs came from the claimed model without trusted hardware attestation (TEE or TLS notary). The run manifest commits the claimed model name and parameters; the task-output pair structure with unique task coverage makes the scope auditable, but model identity itself requires an off-chain attestation mechanism outside GenLayer's current scope.
+- **Model identity requires off-chain attestation.** The contract cannot cryptographically prove outputs came from the claimed model without a TEE or TLS notary. The run manifest supports an `attestation_url` + `attestation_digest` pair for this purpose — the reference is committed on-chain before scoring, validators can verify it independently, and its digest is structurally enforced. Submitters who do not provide an attestation are not rejected, but validators see the absence during scoring.
 - **No on-chain storage of content.** Only digests are stored. If original content is lost the score cannot be re-verified off-chain, but the on-chain seal is permanent.
 
 ## Setup

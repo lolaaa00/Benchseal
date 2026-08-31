@@ -732,6 +732,77 @@ class TestEvidenceBinding:
         with direct_vm.expect_revert("EXPECTED:"):
             contract.score_run(rid, dup_sample, RUBRIC_CONTENT, MANIFEST_CONTENT, RUN_MANIFEST_CONTENT)
 
+    def test_sample_rate_coverage_enforced(self, direct_vm, direct_alice):
+        """sample_rate x manifest_size floor must be met, not just min_samples."""
+        contract = deploy_contract(direct_vm, direct_alice)
+        # Manifest has 2 tasks; policy sample_rate=1.0 requires ceil(2*1.0)=2 samples
+        # min_samples=1 alone would pass with 1 sample, but sample_rate=1.0 should reject it
+        rate_policy = json.dumps({"sample_rate": 1.0, "min_samples": 1})
+        bid = contract.create_benchmark("RateBench", RUBRIC_URL, RUBRIC_DIGEST, DIMS, rate_policy)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+
+        one_sample = json.dumps([
+            {"task_id": "t1", "input": "What is 2+2?", "output": "4"},
+        ])
+        one_digest = _sha256(one_sample)
+        direct_vm.startPrank(direct_alice)
+        rid = contract.commit_run(
+            bid, 1, "ModelX", RUN_MANIFEST_URL, RUN_MANIFEST_DIGEST, METRICS,
+            SAMPLE_URL, one_digest,
+        )
+        # 1 sample passes min_samples=1 but fails sample_rate=1.0 with 2-task manifest
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, one_sample, RUBRIC_CONTENT, MANIFEST_CONTENT, RUN_MANIFEST_CONTENT)
+
+    def test_attestation_url_without_digest_rejected(self, direct_vm, direct_alice):
+        """Run manifest with attestation_url but no attestation_digest must be rejected."""
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+
+        bad_rm = json.dumps({
+            "model": "TestModel-v1",
+            "inference_date": "2026-08-28",
+            "attestation_url": "https://example.com/attestation.json",
+            # attestation_digest intentionally missing
+        })
+        bad_rm_digest = _sha256(bad_rm)
+        direct_vm.startPrank(direct_alice)
+        rid = contract.commit_run(
+            bid, 1, "ModelX", RUN_MANIFEST_URL, bad_rm_digest, METRICS,
+            SAMPLE_URL, SAMPLE_DIGEST,
+        )
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, bad_rm)
+
+    def test_attestation_with_valid_digest_accepted(self, direct_vm, direct_alice):
+        """Run manifest with valid attestation_url and attestation_digest must be accepted."""
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+
+        fake_attestation = '{"signed_by": "trusted-executor", "model": "TestModel-v1"}'
+        attest_digest = _sha256(fake_attestation)
+        attested_rm = json.dumps({
+            "model": "TestModel-v1",
+            "inference_date": "2026-08-28",
+            "attestation_url": "https://example.com/attestation.json",
+            "attestation_digest": attest_digest,
+        })
+        attested_rm_digest = _sha256(attested_rm)
+        direct_vm.startPrank(direct_alice)
+        rid = contract.commit_run(
+            bid, 1, "TestModel-v1", RUN_MANIFEST_URL, attested_rm_digest, METRICS,
+            SAMPLE_URL, SAMPLE_DIGEST,
+        )
+        direct_vm.mock_llm(".*", GOOD_SCORE_JSON)
+        direct_vm.startPrank(direct_alice)
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, attested_rm)
+        run = contract.get_run(rid)
+        assert run["status"] in (3, 4)  # SEALED or ABSTAINED both mean scoring ran
+
     def test_malformed_digest_rejected_on_create_benchmark(self, direct_vm, direct_alice):
         contract = deploy_contract(direct_vm, direct_alice)
         direct_vm.startPrank(direct_alice)
