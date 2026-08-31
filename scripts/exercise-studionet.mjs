@@ -11,7 +11,7 @@
  * All digests are computed from inline content strings — no URL fetching.
  */
 
-import { createClient, createAccount } from "genlayer-js";
+import { createClient, createAccount, chains } from "genlayer-js";
 import { createHash } from "crypto";
 
 const CONTRACT_ADDRESS = process.argv[2];
@@ -86,6 +86,7 @@ const account = createAccount(PRIVATE_KEY);
 const client = createClient({
   endpoint: ENDPOINT,
   account,
+  chain: chains.studionet,
 });
 
 function parseId(tx) {

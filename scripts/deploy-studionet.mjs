@@ -6,7 +6,7 @@
  *   GENLAYER_PRIVATE_KEY=0x... node scripts/deploy-studionet.mjs
  */
 
-import { createClient, createAccount } from "genlayer-js";
+import { createClient, createAccount, chains } from "genlayer-js";
 import { readFileSync } from "fs";
 
 const ENDPOINT = process.env.GENLAYER_ENDPOINT ?? "https://studio.genlayer.com/api";
@@ -21,7 +21,7 @@ const POLL_MS = 5000;
 const MAX_RETRIES = 120;
 
 const account = createAccount(PRIVATE_KEY);
-const client = createClient({ endpoint: ENDPOINT, account });
+const client = createClient({ endpoint: ENDPOINT, account, chain: chains.studionet });
 
 const contractCode = readFileSync("contracts/benchseal.py", "utf8");
 
