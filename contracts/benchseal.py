@@ -31,7 +31,9 @@ Evidence architecture:
   after the outputs were seen.
 
   The sampling policy's min_samples is enforced at score time: the sample
-  bundle must contain at least min_samples entries.
+  bundle must contain at least min_samples entries, each with a distinct
+  task_id. Duplicate task_ids are rejected — repeated copies of one task
+  cannot satisfy the sampling threshold.
 
   The exact content supplied is the exact content judged — no truncation,
   no URL fetching.
@@ -353,7 +355,9 @@ class BenchSeal(gl.Contract):
         Every sample task_id must exist in the manifest.
 
         The sampling policy's min_samples is enforced: the sample bundle must
-        contain at least min_samples entries.
+        contain at least min_samples entries, each with a distinct task_id.
+        Duplicate task_ids are rejected — repeated copies of one task cannot
+        satisfy the sampling threshold.
 
         The run manifest records claimed run provenance (model config, inference
         parameters). Verifying its digest proves the claimed provenance was not
@@ -487,6 +491,17 @@ class BenchSeal(gl.Contract):
                     f"EXPECTED: sample task_id '{task_id}' not found in task manifest — "
                     "sample bundle must contain only tasks from the committed manifest"
                 )
+
+        # Enforce unique task coverage — duplicates cannot satisfy sampling threshold
+        seen_task_ids = set()
+        for s in samples:
+            tid = str(s["task_id"])
+            if tid in seen_task_ids:
+                raise gl.vm.UserError(
+                    f"EXPECTED: sample bundle contains duplicate task_id '{tid}' — "
+                    "each task may appear at most once; repeated copies cannot satisfy the sampling policy"
+                )
+            seen_task_ids.add(tid)
 
         # Enforce sampling policy: min_samples must be satisfied
         try:

@@ -56,8 +56,9 @@ The run manifest (committed in `commit_run`) records the claimed provenance of t
 
 At score time the contract verifies:
 1. Every sample `task_id` exists in the manifest — cannot score outputs for tasks not in the benchmark
-2. The run manifest content hashes to the committed `run_manifest_digest` — proves the claimed run description was not changed after outputs were observed
-3. The sampling policy's `min_samples` is satisfied by the actual sample count
+2. All sample `task_id` values are unique — repeated copies of one task cannot satisfy the sampling threshold
+3. The run manifest content hashes to the committed `run_manifest_digest` — proves the claimed run description was not changed after outputs were observed
+4. The sampling policy's `min_samples` is satisfied by the actual count of distinct tasks
 
 Validators see the canonical prompt, model response, and run provenance together — not just an opaque output blob.
 
@@ -110,7 +111,7 @@ score_bps = round(sum(bands) / (4 * N) * 10000)
 - **Consensus is non-deterministic.** `score_run` can return UNDETERMINED if validators disagree. The caller retries.
 - **Size limits.** Sample bundle max 8 000 chars, rubric max 4 000 chars, task manifest max 8 000 chars. Rejected before scoring.
 - **Score is final once SEALED.** Use `invalidate_run` to retract — original score preserved in `original_score_bps`.
-- **Model identity is not verifiable on-chain.** The contract cannot prove outputs came from the claimed model without trusted hardware attestation (TEE). The task-output pair structure makes coverage auditable, but not model identity.
+- **Model identity is not verifiable on-chain.** The contract cannot prove outputs came from the claimed model without trusted hardware attestation (TEE or TLS notary). The run manifest commits the claimed model name and parameters; the task-output pair structure with unique task coverage makes the scope auditable, but model identity itself requires an off-chain attestation mechanism outside GenLayer's current scope.
 - **No on-chain storage of content.** Only digests are stored. If original content is lost the score cannot be re-verified off-chain, but the on-chain seal is permanent.
 
 ## Setup

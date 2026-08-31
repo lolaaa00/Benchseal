@@ -711,6 +711,27 @@ class TestEvidenceBinding:
         with direct_vm.expect_revert("EXPECTED:"):
             contract.score_run(rid, small_sample, RUBRIC_CONTENT, MANIFEST_CONTENT, RUN_MANIFEST_CONTENT)
 
+    def test_duplicate_task_ids_rejected(self, direct_vm, direct_alice):
+        """Sample bundle with duplicate task_ids must be rejected even if min_samples is met."""
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+
+        # Two entries with the same task_id — repeated copies cannot satisfy sampling
+        dup_sample = json.dumps([
+            {"task_id": "t1", "input": "What is 2+2?", "output": "4"},
+            {"task_id": "t1", "input": "What is 2+2?", "output": "4"},
+        ])
+        dup_digest = _sha256(dup_sample)
+        direct_vm.startPrank(direct_alice)
+        rid = contract.commit_run(
+            bid, 1, "ModelX", RUN_MANIFEST_URL, RUN_MANIFEST_DIGEST, METRICS,
+            SAMPLE_URL, dup_digest,
+        )
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, dup_sample, RUBRIC_CONTENT, MANIFEST_CONTENT, RUN_MANIFEST_CONTENT)
+
     def test_malformed_digest_rejected_on_create_benchmark(self, direct_vm, direct_alice):
         contract = deploy_contract(direct_vm, direct_alice)
         direct_vm.startPrank(direct_alice)
