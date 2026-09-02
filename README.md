@@ -115,11 +115,11 @@ score_bps = round(sum(bands) / (4 * N) * 10000)
 
 ## Limitations
 
-- **No URL fetching by the contract.** Content must be pasted into the UI. URLs are stored as metadata pointers only.
+- **Attestation fetch is live but issuer identity is not verified.** When `attestation_url` is present in the run manifest, the contract fetches the document via GenLayer's nondeterministic web path, verifies its SHA-256 digest matches the committed `attestation_digest`, validates the JSON schema, and checks that any embedded `sample_bundle_digest` / `task_manifest_digest` fields match the run being scored. What the contract cannot do is verify *who* issued the attestation — a TLS notary proof or TEE certificate requires an off-chain verifier or a future trusted-hardware integration.
 - **Consensus is non-deterministic.** `score_run` can return UNDETERMINED if validators disagree. The caller retries.
-- **Size limits.** Sample bundle max 8 000 chars, rubric max 4 000 chars, task manifest max 8 000 chars. Rejected before scoring.
-- **Score is final once SEALED.** Use `invalidate_run` to retract — original score preserved in `original_score_bps`.
-- **Model identity is not cryptographically proven on-chain.** The contract cannot verify that outputs were produced by the claimed model without a TEE attestation or TLS notary proof. The run manifest's `attestation_url` + `attestation_digest` field pair provides a content-addressed execution evidence path — the reference is committed on-chain before scoring, the digest is structurally enforced, and validators see it during scoring. This commits *to* the evidence, but the contract does not fetch or verify the attestation document itself.
+- **Size limits.** Sample bundle max 8 000 chars, rubric max 4 000 chars, task manifest max 8 000 chars, attestation document max 65 536 bytes. Rejected before scoring.
+- **Score is final once SEALED.** Use `invalidate_run` to retract — original score preserved in `original_score_bps`. Only the benchmark owner can invalidate a SEALED run; submitters cannot erase an unfavourable certified result.
+- **Model identity is not cryptographically proven on-chain.** The contract verifies the content of the attestation document and its binding to the run, but cannot verify that the named model produced the outputs without a TEE or TLS notary proof supplied in the attestation itself.
 - **No on-chain storage of content.** Only digests are stored. If original content is lost the score cannot be re-verified off-chain, but the on-chain seal is permanent.
 
 ## Setup
