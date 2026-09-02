@@ -170,12 +170,10 @@ function RunReceipt({ runId }: { runId: number }) {
             <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Submitter</div>
             <div className="digest">{run.submitter}</div>
           </div>
-          {run.sealed_at > 0 && (
+          {run.status === 3 && (
             <div>
-              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Sealed At</div>
-              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "var(--ink)" }}>
-                {new Date(run.sealed_at * 1000).toISOString()}
-              </div>
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Status</div>
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "var(--green)" }}>SEALED</div>
             </div>
           )}
         </div>

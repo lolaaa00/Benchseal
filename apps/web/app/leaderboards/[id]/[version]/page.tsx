@@ -208,7 +208,7 @@ function LeaderboardContent({ benchmarkId, version }: { benchmarkId: number; ver
                   {scoreBpsToPercent(selectedRun.final_score_bps)}
                 </div>
                 <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "var(--ink-faint)", marginTop: 6 }}>
-                  {selectedRun.final_score_bps.toLocaleString()} bps - Sealed {new Date(selectedRun.sealed_at * 1000).toLocaleDateString()}
+                  {selectedRun.final_score_bps.toLocaleString()} bps &mdash; SEALED
                 </div>
               </div>
 

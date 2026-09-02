@@ -49,7 +49,13 @@ export interface RunInfo {
   dimension_bands_json: string;
   final_score_bps: number;
   rationale: string;
-  sealed_at: number;
+  // Invalidation history — present only after invalidation
+  original_status?: RunStatusValue | null;
+  original_score_bps?: number | null;
+  original_dimension_bands_json?: string | null;
+  original_rationale?: string | null;
+  invalidation_actor?: string | null;
+  invalidation_reason_url?: string | null;
 }
 
 export interface SnapshotInfo {
@@ -58,7 +64,6 @@ export interface SnapshotInfo {
   version: number;
   ordered_run_ids_json: string;
   digest: string;
-  sealed_at: number;
 }
 
 export interface RunSummary {
@@ -68,7 +73,6 @@ export interface RunSummary {
   model_name: string;
   status: RunStatusValue;
   final_score_bps: number;
-  sealed_at: number;
 }
 
 // ---------------------------------------------------------------------------

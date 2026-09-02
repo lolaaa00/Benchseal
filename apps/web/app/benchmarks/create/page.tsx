@@ -204,6 +204,10 @@ export default function CreateBenchmarkPage() {
               value={form.samplingPolicy}
               onChange={(e) => setForm({ ...form, samplingPolicy: e.target.value })}
             />
+            <p style={hintStyle}>
+              Requires at least one constraint: <code>min_samples</code> (int &ge; 1) or <code>sample_rate</code> (0 &lt; n &le; 1). Example: <code>{"{ \"sample_rate\": 1.0, \"min_samples\": 10 }"}</code>.
+              At score time every task in the manifest must be evaluated — partial submission is rejected.
+            </p>
           </div>
 
           {result && <div className="success-banner" aria-live="polite">{result} — redirecting...</div>}

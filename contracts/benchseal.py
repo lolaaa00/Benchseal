@@ -30,18 +30,19 @@ Evidence architecture:
   the content at score time proves the provenance description was not changed
   after the outputs were seen.
 
-  The sampling policy is enforced at score time against two requirements:
-    1. min_samples — absolute floor (sample count >= min_samples)
-    2. sample_rate coverage — floor derived from manifest size
-       (sample count >= ceil(manifest_size * sample_rate))
-  Both must pass. Duplicate task_ids are rejected — repeated copies cannot
-  satisfy either threshold. Coverage scales with the benchmark, preventing
-  cherry-picking a small easy subset from a large manifest.
+  Complete manifest evaluation is enforced at score time:
+    1. Full coverage — every task_id in the manifest must appear in the sample bundle;
+       partial evaluation of any subset is rejected.
+    2. min_samples — absolute floor from the sampling policy (sample count >= min_samples).
+    3. Unique task_ids — duplicate task_ids are rejected; repeated copies cannot satisfy
+       either threshold.
+  The caller cannot cherry-pick a convenient subset: all tasks must be evaluated.
 
-  The run manifest may declare an attestation path via attestation_url and
-  attestation_digest. When present, both fields are structurally required and
-  the digest is format-validated. Validators see the attestation reference
-  during scoring and can independently verify the attestation document.
+  The run manifest is strictly validated: malformed JSON is rejected outright, and
+  the fields 'model' and 'inference_date' are required. The run manifest may also
+  declare content-addressed execution evidence via attestation_url and attestation_digest.
+  When present, both fields are structurally required and the digest is format-validated.
+  Validators see the attestation reference during scoring.
 
   The exact content supplied is the exact content judged — no truncation,
   no URL fetching.
@@ -172,6 +173,41 @@ class BenchSeal(gl.Contract):
             "The dimension_bands integer values (0-4) for each named dimension must match exactly"
         )
 
+    def _validate_sampling_policy(self, policy: dict) -> None:
+        """Validate sampling policy schema at benchmark registration time.
+
+        Requires at least one meaningful constraint: min_samples (int >= 1) or
+        sample_rate (float in (0, 1]). Rejects booleans, wrong types, and missing
+        constraints so that every benchmark has an enforceable sampling rule.
+        """
+        if not isinstance(policy, dict):
+            raise gl.vm.UserError("EXPECTED: sampling_policy_json must be a JSON object")
+        min_samples = policy.get("min_samples")
+        sample_rate = policy.get("sample_rate")
+        if min_samples is not None:
+            if isinstance(min_samples, bool):
+                raise gl.vm.UserError(
+                    "EXPECTED: sampling_policy min_samples must be an integer, not a boolean"
+                )
+            if not isinstance(min_samples, int) or min_samples < 1:
+                raise gl.vm.UserError(
+                    "EXPECTED: sampling_policy min_samples must be an integer >= 1"
+                )
+        if sample_rate is not None:
+            if isinstance(sample_rate, bool):
+                raise gl.vm.UserError(
+                    "EXPECTED: sampling_policy sample_rate must be a number, not a boolean"
+                )
+            if not isinstance(sample_rate, (int, float)) or not (0 < float(sample_rate) <= 1):
+                raise gl.vm.UserError(
+                    "EXPECTED: sampling_policy sample_rate must be a number in (0, 1]"
+                )
+        if min_samples is None and sample_rate is None:
+            raise gl.vm.UserError(
+                "EXPECTED: sampling_policy must include at least one constraint: "
+                "min_samples (int >= 1) or sample_rate (float in (0, 1])"
+            )
+
     def _parse_dimensions(self, dimensions_json) -> list:
         if isinstance(dimensions_json, list):
             return [str(d) for d in dimensions_json]
@@ -208,13 +244,15 @@ class BenchSeal(gl.Contract):
         if len(dims) > 32:
             raise gl.vm.UserError("EXPECTED: dimensions_json may not contain more than 32 dimensions")
         if isinstance(sampling_policy_json, dict):
-            sampling_policy_str = json.dumps(sampling_policy_json)
+            policy_obj = sampling_policy_json
+            sampling_policy_str = json.dumps(policy_obj)
         else:
             try:
-                json.loads(sampling_policy_json)
+                policy_obj = json.loads(sampling_policy_json)
                 sampling_policy_str = sampling_policy_json
             except json.JSONDecodeError as e:
                 raise gl.vm.UserError(f"EXPECTED: Invalid sampling_policy_json: {e}") from e
+        self._validate_sampling_policy(policy_obj)
 
         dims_str = json.dumps(dims)
 
@@ -326,7 +364,6 @@ class BenchSeal(gl.Contract):
             "dimension_bands_json": "{}",
             "final_score_bps": 0,
             "rationale": "",
-            "sealed_at": 0,
             # Invalidation history — populated only on invalidation
             "original_status": None,
             "original_score_bps": None,
@@ -511,41 +548,58 @@ class BenchSeal(gl.Contract):
                 )
             seen_task_ids.add(tid)
 
-        # Enforce sampling policy: both min_samples and sample_rate coverage must be satisfied.
-        # sample_rate × manifest_size ensures coverage scales with the benchmark — a submitter
-        # cannot commit a large manifest and cherry-pick a small easy subset.
+        # Enforce complete manifest evaluation — the sample bundle must contain every task
+        # in the committed manifest. Partial submission is not permitted; the caller cannot
+        # cherry-pick an easier subset.
+        if seen_task_ids != manifest_task_ids:
+            missing_from_bundle = manifest_task_ids - seen_task_ids
+            raise gl.vm.UserError(
+                f"EXPECTED: sample bundle is missing {len(missing_from_bundle)} task(s) from the manifest — "
+                "every task in the committed task manifest must be evaluated; "
+                f"missing task_ids: {sorted(missing_from_bundle)}"
+            )
+
+        # Enforce sampling policy min_samples floor as an additional sanity check.
+        # With full manifest coverage required, this effectively mandates that the manifest
+        # contains at least min_samples tasks.
         try:
             sampling_policy = json.loads(b["sampling_policy_json"])
         except (json.JSONDecodeError, ValueError):
             sampling_policy = {}
-        n_manifest = len(manifest_tasks)
         if isinstance(sampling_policy, dict):
             min_samples = sampling_policy.get("min_samples", 1)
-            if isinstance(min_samples, int) and min_samples > 0:
+            if isinstance(min_samples, int) and not isinstance(min_samples, bool) and min_samples > 0:
                 if len(samples) < min_samples:
                     raise gl.vm.UserError(
-                        f"EXPECTED: sample bundle contains {len(samples)} samples but "
+                        f"EXPECTED: sample bundle contains {len(samples)} tasks but "
                         f"sampling policy requires at least {min_samples}"
                     )
-            sample_rate = sampling_policy.get("sample_rate", 0.0)
-            if isinstance(sample_rate, (int, float)) and sample_rate > 0 and n_manifest > 0:
-                import math
-                required_by_rate = math.ceil(n_manifest * float(sample_rate))
-                if len(samples) < required_by_rate:
-                    raise gl.vm.UserError(
-                        f"EXPECTED: sample bundle contains {len(samples)} distinct tasks but "
-                        f"sampling policy (sample_rate={sample_rate}) requires at least "
-                        f"{required_by_rate} of the {n_manifest} manifest tasks"
-                    )
 
-        # Enforce attestation path: if the run manifest declares an attestation_url,
-        # attestation_digest must also be present and must be a valid SHA-256 digest.
-        # This makes attestation a structurally enforced, on-chain-committed reference —
-        # validators see the attestation URL and can independently verify it during scoring.
+        # Parse run manifest strictly — malformed JSON is rejected outright.
+        # The run manifest must be a JSON object and must include the required fields
+        # that identify the model and inference context whose outputs are being certified.
         try:
             run_manifest_obj = json.loads(run_manifest_content)
-        except (json.JSONDecodeError, ValueError):
-            run_manifest_obj = {}
+        except (json.JSONDecodeError, ValueError) as e:
+            raise gl.vm.UserError(
+                f"EXPECTED: run_manifest_content is not valid JSON: {e}"
+            ) from e
+        if not isinstance(run_manifest_obj, dict):
+            raise gl.vm.UserError("EXPECTED: run manifest must be a JSON object")
+        for required_field in ("model", "inference_date"):
+            if required_field not in run_manifest_obj:
+                raise gl.vm.UserError(
+                    f"EXPECTED: run manifest must contain the field '{required_field}'"
+                )
+        if not isinstance(run_manifest_obj.get("model"), str) or not run_manifest_obj["model"]:
+            raise gl.vm.UserError("EXPECTED: run manifest 'model' must be a non-empty string")
+        if not isinstance(run_manifest_obj.get("inference_date"), str) or not run_manifest_obj["inference_date"]:
+            raise gl.vm.UserError("EXPECTED: run manifest 'inference_date' must be a non-empty string")
+
+        # Content-addressed execution evidence: if the run manifest declares an attestation_url,
+        # attestation_digest must also be present and must be a valid SHA-256 digest.
+        # The attestation reference is committed on-chain before scoring; validators see it
+        # during scoring and can independently verify the referenced document.
         if isinstance(run_manifest_obj, dict):
             attestation_url = run_manifest_obj.get("attestation_url")
             attestation_digest = run_manifest_obj.get("attestation_digest")
@@ -846,7 +900,6 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
             "version": version,
             "ordered_run_ids_json": ordered_run_ids_json,
             "digest": digest,
-            "sealed_at": 0,
         })
         self._save_snapshots(ss)
         return sid
@@ -983,7 +1036,6 @@ If you cannot score due to invalid data, return: {{"ok": false, "reason": "<expl
             "model_name": r["model_name"],
             "status": r["status"],
             "final_score_bps": r["final_score_bps"],
-            "sealed_at": r["sealed_at"],
         } for r in page]
 
     @gl.public.view

@@ -59,13 +59,13 @@ The run manifest (committed in `commit_run`) records the claimed provenance of t
 `attestation_url` and `attestation_digest` are optional but if either is present both are required. The attestation document — a signed inference log, TLS notary proof, or trusted executor certificate — is referenced by its digest, which is committed on-chain as part of the run manifest. Validators see the attestation reference during scoring and can independently verify it at the supplied URL. This provides the authenticated execution path: the on-chain commitment proves the attestation reference was not changed after outputs were observed.
 
 At score time the contract verifies:
-1. Every sample `task_id` exists in the manifest — cannot score outputs for tasks not in the benchmark
-2. All sample `task_id` values are unique — repeated copies of one task cannot satisfy either threshold
-3. The run manifest content hashes to the committed `run_manifest_digest` — proves the claimed run description was not changed after outputs were observed
-4. The sampling policy's `min_samples` is satisfied by the actual count of distinct tasks
-5. The sampling policy's `sample_rate` × manifest size is also satisfied — coverage scales with the benchmark, so a submitter cannot commit a large manifest and cherry-pick a small easy subset
+1. **Complete manifest evaluation** — every `task_id` in the task manifest must appear in the sample bundle. Partial evaluation of any subset is rejected; the submitter cannot cherry-pick easier tasks.
+2. All sample `task_id` values are unique — repeated copies of one task are rejected; they cannot satisfy the sampling policy.
+3. The run manifest content hashes to the committed `run_manifest_digest` — proves the claimed run description was not changed after the outputs were observed.
+4. The run manifest is strictly parsed — malformed JSON is rejected outright. The required fields `model` and `inference_date` must be present.
+5. The sampling policy's `min_samples` is satisfied by the actual count of tasks submitted.
 
-If the run manifest declares an `attestation_url`, `attestation_digest` must also be present and must be a valid SHA-256 digest. The attestation reference is committed on-chain before scoring; validators see it during scoring and can independently verify the attestation document.
+If the run manifest declares an `attestation_url`, `attestation_digest` must also be present and must be a valid SHA-256 digest. The attestation reference commits a content-addressed pointer to external execution evidence (a signed inference log, TLS notary proof, or trusted executor certificate) before scoring begins. Validators see the reference during scoring and can verify the document independently.
 
 Validators see the canonical prompt, model response, and run provenance together — not just an opaque output blob.
 
@@ -81,7 +81,8 @@ Browser (submitter)
 Browser (scorer)
   supply(sample_content, rubric_content, task_manifest_content, run_manifest_content)
   → score_run verifies sha256 of all four against stored digests
-  → contract verifies every sample task_id exists in manifest
+  → contract requires all manifest tasks to be in sample bundle (no cherry-picking)
+  → contract validates run manifest required fields (model, inference_date)
   → contract enforces min_samples from sampling policy
   → GenLayer leader runs scoring prompt with task-output pairs + run provenance
   → validators run same prompt independently
@@ -108,7 +109,7 @@ score_bps = round(sum(bands) / (4 * N) * 10000)
 
 | Field | Value |
 |---|---|
-| Address | `0x3802e88e48471622d7745884982dB30d27592190` |
+| Address | `0xbff0807284e1289f504d6aC006F87269830b1C5B` |
 | Chain | StudioNet (chain ID 61999) |
 | Explorer | https://studio.genlayer.com/transactions |
 
@@ -118,7 +119,7 @@ score_bps = round(sum(bands) / (4 * N) * 10000)
 - **Consensus is non-deterministic.** `score_run` can return UNDETERMINED if validators disagree. The caller retries.
 - **Size limits.** Sample bundle max 8 000 chars, rubric max 4 000 chars, task manifest max 8 000 chars. Rejected before scoring.
 - **Score is final once SEALED.** Use `invalidate_run` to retract — original score preserved in `original_score_bps`.
-- **Model identity requires off-chain attestation.** The contract cannot cryptographically prove outputs came from the claimed model without a TEE or TLS notary. The run manifest supports an `attestation_url` + `attestation_digest` pair for this purpose — the reference is committed on-chain before scoring, validators can verify it independently, and its digest is structurally enforced. Submitters who do not provide an attestation are not rejected, but validators see the absence during scoring.
+- **Model identity is not cryptographically proven on-chain.** The contract cannot verify that outputs were produced by the claimed model without a TEE attestation or TLS notary proof. The run manifest's `attestation_url` + `attestation_digest` field pair provides a content-addressed execution evidence path — the reference is committed on-chain before scoring, the digest is structurally enforced, and validators see it during scoring. This commits *to* the evidence, but the contract does not fetch or verify the attestation document itself.
 - **No on-chain storage of content.** Only digests are stored. If original content is lost the score cannot be re-verified off-chain, but the on-chain seal is permanent.
 
 ## Setup
@@ -126,31 +127,36 @@ score_bps = round(sum(bands) / (4 * N) * 10000)
 ```bash
 # Prerequisites: Node 20+, Python 3.12 (for contract tests)
 
-# 1. Install dependencies
-npm ci
+# 1. Install contract test dependencies
+cd tests/direct && pip install -r requirements.txt 2>/dev/null || pip install gltest
+cd ../..
 
-# 2. Configure environment
-cp apps/web/.env.example apps/web/.env.local
-# Edit apps/web/.env.local:
+# 2. Install frontend dependencies
+cd apps/web && npm install
+cd ../..
+
+# 3. Configure environment
+cp apps/web/.env.example apps/web/.env.local 2>/dev/null || true
+# Edit apps/web/.env.local with:
 #   NEXT_PUBLIC_GENLAYER_ENDPOINT=https://studio.genlayer.com/api
-#   NEXT_PUBLIC_BENCHSEAL_CONTRACT=0x3802e88e48471622d7745884982dB30d27592190
+#   NEXT_PUBLIC_BENCHSEAL_CONTRACT=0xbff0807284e1289f504d6aC006F87269830b1C5B
 #   NEXT_PUBLIC_BENCHSEAL_DATA=live
 
-# 3. Run the frontend
+# 4. Run the frontend
 cd apps/web && npm run dev
 ```
 
 ## Tests
 
 ```bash
-# Contract tests (Python 3.12 required — 84 tests)
+# Contract tests (Python 3.12 required)
 python3.12 -m pytest tests/direct/test_benchseal.py -q
 
 # TypeScript typecheck
-npm run typecheck --workspace=apps/web
+cd apps/web && npx tsc --noEmit
 
 # Build
-npm run build --workspace=apps/web
+cd apps/web && npm run build
 ```
 
 ## StudioNet exercise script
@@ -160,7 +166,7 @@ Runs the full lifecycle (create → publish → commit → score → leaderboard
 ```bash
 GENLAYER_PRIVATE_KEY=0x<your_key> \
   node scripts/exercise-studionet.mjs \
-  0x3802e88e48471622d7745884982dB30d27592190
+  0xbff0807284e1289f504d6aC006F87269830b1C5B
 ```
 
 The script computes real SHA-256 digests from inline content and exercises every write method including `score_run` with structured task-output pairs.
@@ -172,7 +178,7 @@ The script computes real SHA-256 digests from inline content and exercises every
 | `create_benchmark(name, rubric_url, rubric_digest, dimensions_json, policy_json)` | write | Register a benchmark. Returns `benchmark_id`. |
 | `publish_version(benchmark_id, url, digest, note)` | write | Publish a task manifest version. Returns `version`. Digest commits the canonical task inputs. |
 | `commit_run(benchmark_id, version, model_name, manifest_url, manifest_digest, metrics_json, sample_url, sample_digest)` | write | Commit a run. Returns `run_id`. |
-| `score_run(run_id, sample_bundle_content, rubric_content, task_manifest_content, run_manifest_content)` | write | Score via consensus. Verifies all four digests; validates sample task IDs against manifest; enforces sampling policy min_samples. |
+| `score_run(run_id, sample_bundle_content, rubric_content, task_manifest_content, run_manifest_content)` | write | Score via consensus. Verifies all four digests; requires every manifest task to be in the sample bundle; validates run manifest required fields; enforces min_samples policy. |
 | `seal_leaderboard(benchmark_id, version, ordered_run_ids_json)` | write | Publish a leaderboard snapshot. All SEALED runs must be included in descending score order. |
 | `invalidate_run(run_id, public_reason_url)` | write | Invalidate a run. Original score preserved in `original_*` fields. |
 | `get_benchmark(id)` | view | |

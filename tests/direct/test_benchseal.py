@@ -1153,3 +1153,201 @@ class TestViews:
         contract = deploy_contract(direct_vm, direct_alice)
         with direct_vm.expect_revert("EXPECTED:"):
             contract.list_runs(999, 0, 10)
+
+
+# ---------------------------------------------------------------------------
+# TestSamplingPolicyValidation
+# ---------------------------------------------------------------------------
+
+class TestSamplingPolicyValidation:
+    """Sampling policy schema is validated at create_benchmark time."""
+
+    def test_rejects_policy_with_no_constraints(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.create_benchmark(
+                "NoBench", RUBRIC_URL, RUBRIC_DIGEST, DIMS,
+                json.dumps({}),  # no min_samples or sample_rate
+            )
+
+    def test_rejects_policy_with_zero_min_samples(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.create_benchmark(
+                "ZeroBench", RUBRIC_URL, RUBRIC_DIGEST, DIMS,
+                json.dumps({"min_samples": 0}),
+            )
+
+    def test_rejects_policy_with_boolean_min_samples(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.create_benchmark(
+                "BoolBench", RUBRIC_URL, RUBRIC_DIGEST, DIMS,
+                json.dumps({"min_samples": True}),
+            )
+
+    def test_rejects_policy_with_zero_sample_rate(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.create_benchmark(
+                "ZeroRateBench", RUBRIC_URL, RUBRIC_DIGEST, DIMS,
+                json.dumps({"sample_rate": 0.0}),
+            )
+
+    def test_rejects_policy_with_sample_rate_above_one(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.create_benchmark(
+                "HighRateBench", RUBRIC_URL, RUBRIC_DIGEST, DIMS,
+                json.dumps({"sample_rate": 1.5}),
+            )
+
+    def test_accepts_policy_with_only_min_samples(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        direct_vm.startPrank(direct_alice)
+        bid = contract.create_benchmark(
+            "MinSamplesBench", RUBRIC_URL, RUBRIC_DIGEST, DIMS,
+            json.dumps({"min_samples": 1}),
+        )
+        assert bid == 0
+
+    def test_accepts_policy_with_only_sample_rate(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        direct_vm.startPrank(direct_alice)
+        bid = contract.create_benchmark(
+            "SampleRateBench", RUBRIC_URL, RUBRIC_DIGEST, DIMS,
+            json.dumps({"sample_rate": 0.5}),
+        )
+        assert bid == 0
+
+    def test_accepts_policy_with_both_constraints(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        direct_vm.startPrank(direct_alice)
+        bid = contract.create_benchmark(
+            "BothBench", RUBRIC_URL, RUBRIC_DIGEST, DIMS,
+            json.dumps({"sample_rate": 1.0, "min_samples": 2}),
+        )
+        assert bid == 0
+
+
+# ---------------------------------------------------------------------------
+# TestRunManifestValidation
+# ---------------------------------------------------------------------------
+
+class TestRunManifestValidation:
+    """Run manifest is strictly validated at score time."""
+
+    def _setup(self, direct_vm, alice):
+        contract = deploy_contract(direct_vm, alice)
+        bid = create_benchmark_helper(contract, direct_vm, alice)
+        publish_version_helper(contract, direct_vm, alice, bid)
+        return contract, bid
+
+    def _commit_with_manifest(self, contract, direct_vm, alice, bid, run_manifest):
+        rm_digest = _sha256(run_manifest)
+        direct_vm.startPrank(alice)
+        rid = contract.commit_run(
+            bid, 1, "ModelX", RUN_MANIFEST_URL, rm_digest, METRICS,
+            SAMPLE_URL, SAMPLE_DIGEST,
+        )
+        return rid
+
+    def test_rejects_malformed_json_run_manifest(self, direct_vm, direct_alice):
+        contract, bid = self._setup(direct_vm, direct_alice)
+        bad_rm = "this is not json at all"
+        rid = self._commit_with_manifest(contract, direct_vm, direct_alice, bid, bad_rm)
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, bad_rm)
+
+    def test_rejects_run_manifest_missing_model(self, direct_vm, direct_alice):
+        contract, bid = self._setup(direct_vm, direct_alice)
+        no_model = json.dumps({"inference_date": "2026-09-01"})
+        rid = self._commit_with_manifest(contract, direct_vm, direct_alice, bid, no_model)
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, no_model)
+
+    def test_rejects_run_manifest_missing_inference_date(self, direct_vm, direct_alice):
+        contract, bid = self._setup(direct_vm, direct_alice)
+        no_date = json.dumps({"model": "TestModel-v1"})
+        rid = self._commit_with_manifest(contract, direct_vm, direct_alice, bid, no_date)
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, no_date)
+
+    def test_accepts_run_manifest_with_required_fields(self, direct_vm, direct_alice):
+        contract, bid = self._setup(direct_vm, direct_alice)
+        good_rm = json.dumps({"model": "TestModel-v1", "inference_date": "2026-09-01"})
+        rid = self._commit_with_manifest(contract, direct_vm, direct_alice, bid, good_rm)
+        direct_vm.mock_llm(".*", GOOD_SCORE_JSON)
+        direct_vm.startPrank(direct_alice)
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, good_rm)
+        run = contract.get_run(rid)
+        assert run["status"] in (3, 4)  # SEALED or ABSTAINED — scoring ran
+
+
+# ---------------------------------------------------------------------------
+# TestFullManifestCoverage
+# ---------------------------------------------------------------------------
+
+class TestFullManifestCoverage:
+    """Every task in the manifest must appear in the sample bundle."""
+
+    def test_partial_bundle_rejected(self, direct_vm, direct_alice):
+        """Submitting only some manifest tasks must be rejected."""
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+
+        # Only t1, missing t2 from the 2-task manifest
+        partial_sample = json.dumps([
+            {"task_id": "t1", "input": "What is 2+2?", "output": "4"},
+        ])
+        partial_digest = _sha256(partial_sample)
+        direct_vm.startPrank(direct_alice)
+        rid = contract.commit_run(
+            bid, 1, "ModelX", RUN_MANIFEST_URL, RUN_MANIFEST_DIGEST, METRICS,
+            SAMPLE_URL, partial_digest,
+        )
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, partial_sample, RUBRIC_CONTENT, MANIFEST_CONTENT, RUN_MANIFEST_CONTENT)
+
+    def test_all_tasks_covered_accepted(self, direct_vm, direct_alice):
+        """Sample bundle covering all manifest tasks must be accepted."""
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+        rid = commit_run_helper(contract, direct_vm, direct_alice, bid)
+        direct_vm.mock_llm(".*", GOOD_SCORE_JSON)
+        direct_vm.startPrank(direct_alice)
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, RUN_MANIFEST_CONTENT)
+        run = contract.get_run(rid)
+        assert run["status"] in (3, 4)
+
+    def test_extra_task_not_in_manifest_rejected(self, direct_vm, direct_alice):
+        """Sample bundle containing a task_id not in the manifest must be rejected."""
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+
+        extra_sample = json.dumps([
+            {"task_id": "t1", "input": "What is 2+2?", "output": "4"},
+            {"task_id": "t2", "input": "Name a primary colour.", "output": "Red"},
+            {"task_id": "t_extra", "input": "Extra?", "output": "No"},
+        ])
+        extra_digest = _sha256(extra_sample)
+        direct_vm.startPrank(direct_alice)
+        rid = contract.commit_run(
+            bid, 1, "ModelX", RUN_MANIFEST_URL, RUN_MANIFEST_DIGEST, METRICS,
+            SAMPLE_URL, extra_digest,
+        )
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, extra_sample, RUBRIC_CONTENT, MANIFEST_CONTENT, RUN_MANIFEST_CONTENT)
