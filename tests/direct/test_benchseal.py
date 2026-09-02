@@ -1351,3 +1351,206 @@ class TestFullManifestCoverage:
         direct_vm.startPrank(direct_alice)
         with direct_vm.expect_revert("EXPECTED:"):
             contract.score_run(rid, extra_sample, RUBRIC_CONTENT, MANIFEST_CONTENT, RUN_MANIFEST_CONTENT)
+
+# ---------------------------------------------------------------------------
+# TestAttestationVerification
+# ---------------------------------------------------------------------------
+
+ATTEST_URL = "https://example.com/attestation.json"
+_ATTEST_CONTENT_BASE = json.dumps({
+    "model": "TestModel-v1",
+    "inference_date": "2026-08-27",
+    "sample_bundle_digest": SAMPLE_DIGEST,
+    "task_manifest_digest": MANIFEST_DIGEST,
+})
+_ATTEST_DIGEST = "sha256:" + hashlib.sha256(_ATTEST_CONTENT_BASE.encode()).hexdigest()
+
+
+def _make_attested_rm(attest_url: str, attest_digest: str) -> str:
+    return json.dumps({
+        "model": "TestModel-v1",
+        "inference_date": "2026-08-27",
+        "attestation_url": attest_url,
+        "attestation_digest": attest_digest,
+    })
+
+
+class TestAttestationVerification:
+    def _setup(self, direct_vm, alice, attested_rm: str):
+        contract = deploy_contract(direct_vm, alice)
+        bid = create_benchmark_helper(contract, direct_vm, alice)
+        publish_version_helper(contract, direct_vm, alice, bid)
+        rm_digest = _sha256(attested_rm)
+        direct_vm.startPrank(alice)
+        rid = contract.commit_run(
+            bid, 1, "TestModel-v1", RUN_MANIFEST_URL, rm_digest, METRICS,
+            SAMPLE_URL, SAMPLE_DIGEST,
+        )
+        return contract, bid, rid
+
+    def test_valid_attestation_accepted(self, direct_vm, direct_alice):
+        attested_rm = _make_attested_rm(ATTEST_URL, _ATTEST_DIGEST)
+        contract, _bid, rid = self._setup(direct_vm, direct_alice, attested_rm)
+        direct_vm.mock_web(ATTEST_URL, {"status": 200, "body": _ATTEST_CONTENT_BASE, "method": "GET"})
+        direct_vm.mock_llm(".*", GOOD_SCORE_JSON)
+        direct_vm.startPrank(direct_alice)
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, attested_rm)
+        run = contract.get_run(rid)
+        assert run["status"] in (3, 4)  # SEALED or ABSTAINED — scoring ran
+
+    def test_attestation_digest_mismatch_rejected(self, direct_vm, direct_alice):
+        attested_rm = _make_attested_rm(ATTEST_URL, _ATTEST_DIGEST)
+        contract, _bid, rid = self._setup(direct_vm, direct_alice, attested_rm)
+        # Return different content so hash won't match
+        direct_vm.mock_web(ATTEST_URL, {"status": 200, "body": "different content entirely", "method": "GET"})
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, attested_rm)
+
+    def test_attestation_http_failure_abstains(self, direct_vm, direct_alice):
+        attested_rm = _make_attested_rm(ATTEST_URL, _ATTEST_DIGEST)
+        contract, _bid, rid = self._setup(direct_vm, direct_alice, attested_rm)
+        direct_vm.mock_web(ATTEST_URL, {"status": 500, "body": "Internal Server Error", "method": "GET"})
+        direct_vm.startPrank(direct_alice)
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, attested_rm)
+        run = contract.get_run(rid)
+        assert run["status"] == 4  # ABSTAINED
+
+    def test_attestation_oversized_response_abstains(self, direct_vm, direct_alice):
+        # Use a placeholder digest — we ABSTAIN before hash check
+        placeholder_digest = "sha256:" + "a" * 64
+        attested_rm = _make_attested_rm(ATTEST_URL, placeholder_digest)
+        contract, _bid, rid = self._setup(direct_vm, direct_alice, attested_rm)
+        oversized_body = "x" * 65537
+        direct_vm.mock_web(ATTEST_URL, {"status": 200, "body": oversized_body, "method": "GET"})
+        direct_vm.startPrank(direct_alice)
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, attested_rm)
+        run = contract.get_run(rid)
+        assert run["status"] == 4  # ABSTAINED
+
+    def test_attestation_malformed_json_rejected(self, direct_vm, direct_alice):
+        malformed = "this is not json"
+        malformed_digest = "sha256:" + hashlib.sha256(malformed.encode()).hexdigest()
+        attested_rm = _make_attested_rm(ATTEST_URL, malformed_digest)
+        contract, _bid, rid = self._setup(direct_vm, direct_alice, attested_rm)
+        direct_vm.mock_web(ATTEST_URL, {"status": 200, "body": malformed, "method": "GET"})
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, attested_rm)
+
+    def test_attestation_wrong_sample_bundle_digest_rejected(self, direct_vm, direct_alice):
+        # Attestation claims a different sample_bundle_digest
+        wrong_attest = json.dumps({
+            "model": "TestModel-v1",
+            "inference_date": "2026-08-27",
+            "sample_bundle_digest": "sha256:" + "b" * 64,  # wrong
+            "task_manifest_digest": MANIFEST_DIGEST,
+        })
+        wrong_digest = "sha256:" + hashlib.sha256(wrong_attest.encode()).hexdigest()
+        attested_rm = _make_attested_rm(ATTEST_URL, wrong_digest)
+        contract, _bid, rid = self._setup(direct_vm, direct_alice, attested_rm)
+        direct_vm.mock_web(ATTEST_URL, {"status": 200, "body": wrong_attest, "method": "GET"})
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, attested_rm)
+
+    def test_attestation_wrong_manifest_digest_rejected(self, direct_vm, direct_alice):
+        wrong_attest = json.dumps({
+            "model": "TestModel-v1",
+            "inference_date": "2026-08-27",
+            "sample_bundle_digest": SAMPLE_DIGEST,
+            "task_manifest_digest": "sha256:" + "c" * 64,  # wrong
+        })
+        wrong_digest = "sha256:" + hashlib.sha256(wrong_attest.encode()).hexdigest()
+        attested_rm = _make_attested_rm(ATTEST_URL, wrong_digest)
+        contract, _bid, rid = self._setup(direct_vm, direct_alice, attested_rm)
+        direct_vm.mock_web(ATTEST_URL, {"status": 200, "body": wrong_attest, "method": "GET"})
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, attested_rm)
+
+    def test_run_without_attestation_scores_normally(self, direct_vm, direct_alice):
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+        rid = commit_run_helper(contract, direct_vm, direct_alice, bid)
+        direct_vm.mock_llm(".*", GOOD_SCORE_JSON)
+        direct_vm.startPrank(direct_alice)
+        contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, RUN_MANIFEST_CONTENT)
+        run = contract.get_run(rid)
+        assert run["status"] == 3  # SEALED
+
+    def test_non_https_attestation_url_rejected(self, direct_vm, direct_alice):
+        http_attest_digest = "sha256:" + "d" * 64
+        bad_rm = json.dumps({
+            "model": "TestModel-v1",
+            "inference_date": "2026-08-27",
+            "attestation_url": "http://example.com/attestation.json",  # http, not https
+            "attestation_digest": http_attest_digest,
+        })
+        bad_rm_digest = _sha256(bad_rm)
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+        direct_vm.startPrank(direct_alice)
+        rid = contract.commit_run(
+            bid, 1, "TestModel-v1", RUN_MANIFEST_URL, bad_rm_digest, METRICS,
+            SAMPLE_URL, SAMPLE_DIGEST,
+        )
+        direct_vm.startPrank(direct_alice)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.score_run(rid, SAMPLE_CONTENT, RUBRIC_CONTENT, MANIFEST_CONTENT, bad_rm)
+
+
+# ---------------------------------------------------------------------------
+# TestSealingSemantics
+# ---------------------------------------------------------------------------
+
+class TestSealingSemantics:
+    def _setup_sealed_run_with_submitter(self, direct_vm, owner, submitter):
+        contract = deploy_contract(direct_vm, owner)
+        bid = create_benchmark_helper(contract, direct_vm, owner)
+        publish_version_helper(contract, direct_vm, owner, bid)
+        direct_vm.startPrank(submitter)
+        rid = contract.commit_run(
+            bid, 1, "ModelX", RUN_MANIFEST_URL, RUN_MANIFEST_DIGEST, METRICS,
+            SAMPLE_URL, SAMPLE_DIGEST,
+        )
+        seal_run(contract, direct_vm, submitter, rid)
+        return contract, bid, rid
+
+    def test_submitter_cannot_invalidate_sealed_run(self, direct_vm, direct_alice, direct_bob):
+        # alice = owner, bob = submitter
+        contract, _bid, rid = self._setup_sealed_run_with_submitter(direct_vm, direct_alice, direct_bob)
+        run = contract.get_run(rid)
+        assert run["status"] == 3  # SEALED
+        direct_vm.startPrank(direct_bob)
+        with direct_vm.expect_revert("EXPECTED:"):
+            contract.invalidate_run(rid, "https://example.com/reason")
+
+    def test_owner_can_invalidate_sealed_run(self, direct_vm, direct_alice, direct_bob):
+        # alice = owner, bob = submitter
+        contract, _bid, rid = self._setup_sealed_run_with_submitter(direct_vm, direct_alice, direct_bob)
+        run = contract.get_run(rid)
+        assert run["status"] == 3  # SEALED
+        original_score = run["final_score_bps"]
+        direct_vm.startPrank(direct_alice)
+        contract.invalidate_run(rid, "https://example.com/reason")
+        run2 = contract.get_run(rid)
+        assert run2["status"] == 5  # INVALIDATED
+        assert run2["original_score_bps"] == original_score
+
+    def test_submitter_can_invalidate_uncommitted_run(self, direct_vm, direct_alice, direct_bob):
+        # alice = owner, bob = submitter — uncommitted (RUN_COMMITTED) run is fine to invalidate
+        contract = deploy_contract(direct_vm, direct_alice)
+        bid = create_benchmark_helper(contract, direct_vm, direct_alice)
+        publish_version_helper(contract, direct_vm, direct_alice, bid)
+        direct_vm.startPrank(direct_bob)
+        rid = contract.commit_run(
+            bid, 1, "ModelX", RUN_MANIFEST_URL, RUN_MANIFEST_DIGEST, METRICS,
+            SAMPLE_URL, SAMPLE_DIGEST,
+        )
+        direct_vm.startPrank(direct_bob)
+        contract.invalidate_run(rid, "https://example.com/reason")
+        run = contract.get_run(rid)
+        assert run["status"] == 5  # INVALIDATED

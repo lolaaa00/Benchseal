@@ -109,6 +109,51 @@ export function parseLeaderResult(tx: unknown): ExecutionResult {
 }
 
 /**
+ * Translate raw contract error messages into human-readable strings.
+ * Matches known EXPECTED: prefixed error patterns from the BenchSeal contract.
+ */
+export function parseContractError(msg: string): string {
+  if (!msg) return "Unknown error";
+
+  // User-rejected wallet signature
+  if (/user rejected|user denied|rejected the request/i.test(msg)) {
+    return "Wallet signature rejected.";
+  }
+
+  const m = msg.match(/EXPECTED:\s*(.*)/s);
+  const body = m ? m[1].trim() : msg;
+
+  if (/sample bundle is missing/i.test(body)) {
+    return "Sample bundle does not cover all manifest tasks. Every task in the benchmark must be evaluated.";
+  }
+  if (/sampling_policy/i.test(body)) {
+    return `Sampling policy error: ${body}`;
+  }
+  if (/run manifest/i.test(body)) {
+    return `Run manifest validation failed: ${body}`;
+  }
+  if (/attestation.*digest mismatch|digest mismatch.*attestation/i.test(body)) {
+    return "Evidence digest mismatch — the content you supplied does not match what was committed on-chain.";
+  }
+  if (/attestation/i.test(body)) {
+    return `Attestation verification failed: ${body}`;
+  }
+  if (/digest mismatch/i.test(body)) {
+    return "Evidence digest mismatch — the content you supplied does not match what was committed on-chain.";
+  }
+
+  if (/ROLLBACK/i.test(msg) && !m) {
+    return "Transaction rolled back by contract.";
+  }
+  if (/UNDETERMINED/i.test(msg)) {
+    return "GenLayer validators could not reach consensus. Try again.";
+  }
+
+  // Return the EXPECTED body if matched, else original
+  return m ? body : msg;
+}
+
+/**
  * Parse an integer ID from a write transaction result.
  * Returns null if the result does not contain a numeric ID.
  */

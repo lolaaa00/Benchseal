@@ -1,5 +1,6 @@
 "use client";
 import React from "react";
+import { parseContractError } from "@/lib/genlayer/execution";
 
 const EXPLORER_BASE = "https://studio.genlayer.com/transactions";
 
@@ -69,7 +70,7 @@ export function TxStatus({ txHash, status, error }: TxStatusProps) {
         </div>
       )}
 
-      {error && <div className="error-banner" style={{ fontSize: 12 }}>{error}</div>}
+      {error && <div className="error-banner" style={{ fontSize: 12 }}>{parseContractError(error)}</div>}
     </div>
   );
 }
