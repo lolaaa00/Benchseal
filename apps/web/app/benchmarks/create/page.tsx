@@ -61,6 +61,9 @@ export default function CreateBenchmarkPage() {
     setSubmitting(true);
 
     try {
+      if (!isCorrectChain) {
+        throw new Error("Wrong network — please switch to StudioNet (chain 61999) before submitting.");
+      }
       if (!form.rubricContent.trim()) {
         throw new Error("Rubric content is required. Paste the rubric text to commit its digest.");
       }

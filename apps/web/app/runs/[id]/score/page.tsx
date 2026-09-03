@@ -144,6 +144,9 @@ function ScoreRoom({ runId }: { runId: number }) {
     setScoreResult(null);
     setScoring(true);
     try {
+      if (!isCorrectChain) {
+        throw new Error("Wrong network — please switch to StudioNet (chain 61999) before scoring.");
+      }
       if (!sampleContent) throw new Error("Sample bundle content is required.");
       if (!rubricContent) throw new Error("Rubric content is required.");
       if (!manifestContent) throw new Error("Task manifest content is required.");

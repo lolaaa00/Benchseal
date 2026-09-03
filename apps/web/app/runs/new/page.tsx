@@ -109,6 +109,9 @@ function RunSubmitForm() {
     setSubmitting(true);
 
     try {
+      if (!isCorrectChain) {
+        throw new Error("Wrong network — please switch to StudioNet (chain 61999) before submitting.");
+      }
       if (!form.runManifestContent.trim()) {
         throw new Error("Run manifest content is required to compute a genuine digest.");
       }

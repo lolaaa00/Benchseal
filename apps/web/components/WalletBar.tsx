@@ -97,7 +97,9 @@ export function WalletBar() {
             borderRadius: 8,
             padding: "4px 10px",
           }}>
-            Chain {chainId ?? "?"}{chainId === GENLAYER_CHAIN_ID ? " ✓" : " ✗"}
+            {isCorrectChain
+              ? `StudioNet (${GENLAYER_CHAIN_ID}) ✓`
+              : `Wrong network — switch to StudioNet`}
           </span>
           <span style={{
             fontFamily: "JetBrains Mono, monospace",

@@ -2,7 +2,7 @@
 import { chains } from "genlayer-js";
 
 export const GENLAYER_CHAIN_ID = 61999;
-export const GENLAYER_CHAIN_ID_HEX = "0xF21F"; // 61999 in hex
+export const GENLAYER_CHAIN_ID_HEX = "0xF22F"; // 61999 in hex
 
 // Use local proxy in browser to avoid CORS; direct endpoint server-side
 export const GENLAYER_ENDPOINT =

@@ -68,7 +68,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // On mount: restore generated wallet if stored
+  // On mount: restore generated wallet if stored, or rehydrate injected wallet if already authorized
   useEffect(() => {
     const pk = loadStoredKey();
     if (pk) {
@@ -87,7 +87,22 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       } catch {
         clearStoredKey();
       }
+    } else {
+      // Rehydrate injected wallet silently (eth_accounts does NOT prompt the user)
+      const eth = getEthereum();
+      if (eth) {
+        eth.request({ method: "eth_accounts" })
+          .then((accounts: string[]) => {
+            if (accounts && accounts.length > 0) {
+              setAccount(accounts[0]);
+              setWalletMode("injected");
+              readChain();
+            }
+          })
+          .catch(() => { /* ignore */ });
+      }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Subscribe to injected wallet events
@@ -194,30 +209,52 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         method: "wallet_switchEthereumChain",
         params: [{ chainId: GENLAYER_CHAIN_ID_HEX }],
       });
+      // Update chain state immediately after successful switch
+      await readChain();
     } catch (switchErr: unknown) {
-      if ((switchErr as { code?: number }).code === 4902) {
+      const errCode = (switchErr as { code?: number }).code;
+      if (errCode === 4902) {
+        // Chain not found in wallet — add it first, then switch
         try {
           await eth.request({
             method: "wallet_addEthereumChain",
             params: [
               {
                 chainId: GENLAYER_CHAIN_ID_HEX,
-                chainName: STUDIONET_CHAIN.name,
-                rpcUrls: [STUDIONET_CHAIN.rpcUrls.default.http[0]],
-                nativeCurrency: STUDIONET_CHAIN.nativeCurrency,
+                chainName: "GenLayer StudioNet",
+                nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+                rpcUrls: ["https://studio.genlayer.com/api"],
+                blockExplorerUrls: ["https://studio.genlayer.com/transactions"],
               },
             ],
           });
+          // After adding, attempt to switch again
+          try {
+            await eth.request({
+              method: "wallet_switchEthereumChain",
+              params: [{ chainId: GENLAYER_CHAIN_ID_HEX }],
+            });
+            await readChain();
+          } catch (switchAfterAddErr: unknown) {
+            if ((switchAfterAddErr as { code?: number }).code !== 4001) {
+              const msg = switchAfterAddErr instanceof Error ? switchAfterAddErr.message : String(switchAfterAddErr);
+              setError(msg);
+            }
+          }
         } catch (addErr: unknown) {
-          const msg = addErr instanceof Error ? addErr.message : String(addErr);
-          setError(msg);
+          if ((addErr as { code?: number }).code !== 4001) {
+            const msg = addErr instanceof Error ? addErr.message : String(addErr);
+            setError(msg);
+          }
         }
+      } else if (errCode === 4001) {
+        // User rejected — silent, no error shown
       } else {
         const msg = switchErr instanceof Error ? switchErr.message : String(switchErr);
         setError(msg);
       }
     }
-  }, []);
+  }, [readChain]);
 
   const disconnect = useCallback(() => {
     setAccount(null);
