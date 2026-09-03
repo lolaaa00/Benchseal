@@ -50,25 +50,40 @@ function BenchmarkDetail({ id }: { id: number }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showPublish, setShowPublish] = useState(false);
-  const [publishForm, setPublishForm] = useState({ url: "", digest: "", note: "" });
+  const [publishForm, setPublishForm] = useState({ url: "", content: "", note: "" });
   const [publishing, setPublishing] = useState(false);
+  const [manifestDigest, setManifestDigest] = useState<string>("");
   const [publishTxHash, setPublishTxHash] = useState<string | null>(null);
   const [publishTxStatus, setPublishTxStatus] = useState<string | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const content = publishForm.content.trim();
+    if (!content) { setManifestDigest(""); return; }
+    (async () => {
+      const enc = new TextEncoder().encode(content);
+      const buf = await crypto.subtle.digest("SHA-256", enc);
+      const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+      setManifestDigest("sha256:" + hex);
+    })();
+  }, [publishForm.content]);
 
   async function handlePublishVersion(e: React.FormEvent) {
     e.preventDefault();
     setPublishError(null);
     setPublishing(true);
     try {
-      if (!publishForm.digest || !publishForm.digest.match(/^sha256:[0-9a-f]{64}$/)) {
+      if (!publishForm.content.trim()) {
+        throw new Error("Task manifest content is required.");
+      }
+      if (!manifestDigest || !manifestDigest.match(/^sha256:[0-9a-f]{64}$/)) {
         throw new Error("A valid SHA-256 digest (sha256:<64 hex chars>) is required for the task manifest.");
       }
       const mode = walletMode === "none" ? undefined : (walletMode as "injected" | "generated");
       const exec = await publishVersion(
         id,
         publishForm.url,
-        publishForm.digest,
+        manifestDigest,
         publishForm.note || "new version",
         (hash) => setPublishTxHash(hash),
         (status) => setPublishTxStatus(status),
@@ -188,23 +203,40 @@ function BenchmarkDetail({ id }: { id: number }) {
             <form onSubmit={handlePublishVersion} style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
               <input
                 className="field-input"
-                placeholder="Task manifest URL"
+                placeholder="Task manifest URL (https:// or ipfs://)"
                 value={publishForm.url}
                 onChange={(e) => setPublishForm({ ...publishForm, url: e.target.value })}
                 required
                 style={{ fontSize: 12 }}
               />
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <label style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Task Manifest Content *
+                </label>
+                <textarea
+                  className="field-input"
+                  placeholder='{"tasks":[{"task_id":"t1","prompt":"..."}]}'
+                  value={publishForm.content}
+                  onChange={(e) => setPublishForm({ ...publishForm, content: e.target.value })}
+                  required
+                  rows={5}
+                  style={{ fontSize: 11, fontFamily: "JetBrains Mono, monospace", resize: "vertical" }}
+                />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <label style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Task Manifest SHA-256 (auto-computed)
+                </label>
+                <input
+                  className="field-input"
+                  value={manifestDigest || (publishForm.content.trim() ? "Computing…" : "— enter manifest content above —")}
+                  readOnly
+                  style={{ fontSize: 11, fontFamily: "JetBrains Mono, monospace", color: manifestDigest ? "var(--green)" : "var(--ink-faint)", opacity: 0.85 }}
+                />
+              </div>
               <input
                 className="field-input"
-                placeholder="sha256:<64 hex chars> (required)"
-                value={publishForm.digest}
-                onChange={(e) => setPublishForm({ ...publishForm, digest: e.target.value })}
-                style={{ fontSize: 12 }}
-                required
-              />
-              <input
-                className="field-input"
-                placeholder="Version note"
+                placeholder="Version note (optional)"
                 value={publishForm.note}
                 onChange={(e) => setPublishForm({ ...publishForm, note: e.target.value })}
                 style={{ fontSize: 12 }}
@@ -212,7 +244,7 @@ function BenchmarkDetail({ id }: { id: number }) {
               <div aria-live="polite">
                 <TxStatus txHash={publishTxHash} status={publishTxStatus} error={publishError} />
               </div>
-              <button type="submit" className="btn-p" disabled={publishing} style={{ fontSize: 12, padding: "8px 14px" }}>
+              <button type="submit" className="btn-p" disabled={publishing || !manifestDigest} style={{ fontSize: 12, padding: "8px 14px" }}>
                 {publishing ? (publishTxHash ? "Awaiting consensus..." : "Publishing...") : "Publish Version"}
               </button>
             </form>
